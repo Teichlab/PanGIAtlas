@@ -45,3 +45,20 @@ Extended atlas (original count matrices used):
 - `metadata`: this folder contains metadata used for analysis (small data objects)
 - `src`: this folder contains notebooks and scripts
 - `thrash`: old code snippets no longer in use, kept for OCD
+
+## Set-up conda environment
+
+1. Create a new conda environment
+
+```
+conda create --name megagut python=3.9
+conda activate megagut
+```
+
+2. Install R and R dependencies in the environment
+
+```
+conda install conda-forge::r-base==4.0.5 bioconda::bioconductor-edger==3.32.1 rpy2==3.4.2 conda-forge::r-statmod==1.4.37
+```
+
+

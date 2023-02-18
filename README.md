@@ -1,5 +1,5 @@
 # megagut
-Integration of gut cell atlases. 
+Integration of single cell gut datasets. 
 Studies included in the initial integration: 
 
 Core: 

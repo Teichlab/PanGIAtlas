@@ -1,8 +1,7 @@
 # megagut
 Integration of single cell gut datasets. 
-Studies included in the initial integration: 
 
-Core: 
+Core datasets (remapped using STAR v2.7.9a, human reference Cell Ranger 2020-A using [STARsolo pipeline v1.0](https://github.com/cellgeni/STARsolo)): 
 - Williams et al., Cell, 2021, [DOI](https://doi.org/10.1016/j.cell.2021.05.013)
 - Caetano et al., eLife, 2021, [DOI](https://doi.org/10.7554/eLife.62810)
 - Huang et al., Cell, 2019, [DOI](https://doi.org/10.1016/j.cell.2019.10.027)
@@ -22,7 +21,7 @@ Core:
 - Li et al., Nat Immunol., 2019, [DOI](https://doi.org/10.1038/s41590-018-0294-9!)
 - Martin et al., Cell, 2019 [DOI](https://doi.org/10.1016/j.cell.2019.08.008)
 
-Extended atlas: 
+Extended atlas (original count matrices used): 
 - Nowicki-Osuch et al., Science, 2021, [DOI](https://doi.org/10.1126/science.abd1449)
 - Kumar et al., Cancer Discovery, 2022, [DOI](https://doi.org/10.1158/2159-8290.CD-21-0683)
 - Corridoni et al., Nature Medicine, 2020, [DOI](https://doi.org/10.1038/s41591-020-1003-4)

@@ -21,7 +21,8 @@ Core datasets (remapped using STAR v2.7.9a, human reference Cell Ranger 2020-A u
 - Li et al., Nat Immunol., 2019, [DOI](https://doi.org/10.1038/s41590-018-0294-9!)
 - Martin et al., Cell, 2019 [DOI](https://doi.org/10.1016/j.cell.2019.08.008)
 - He et al., Genome Biology, 2020 [DOI](https://doi.org/10.1186/s13059-020-02210-0)
-- Jeong et al., 2021 Clin. Cancer Res. 2021 [DOI](https://doi.org/10.1158/1078-0432.CCR-21-0792)
+- Jeong et al., Clin. Cancer Res., 2021 [DOI](https://doi.org/10.1158/1078-0432.CCR-21-0792)
+- Kim et al., NPJ Precis. Oncol., 2022 [DOI](https://doi.org/10.1038/s41698-022-00251-1)
 
 Extended atlas (original count matrices used): 
 - Nowicki-Osuch et al., Science, 2021, [DOI](https://doi.org/10.1126/science.abd1449)

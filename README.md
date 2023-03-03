@@ -46,7 +46,10 @@ Extended atlas (original count matrices used):
 - Boland et al., Science Immunology, 2020 [DOI](https://doi.org/10.1126/sciimmunol.abb4432)
 - The Tabula Sapiens Consortium, Science 2022 [DOI](https://www.science.org/doi/10.1126/science.abl4896)
 - Zhang et al., Nature, 2018 [DOI](https://doi.org/10.1038/s41586-018-0694-x)
-- Chen et al., Cell 2021 [DOI](https://doi.org/10.1016/j.cell.2021.11.031)
+- Chen et al., Cell, 2021 [DOI](https://doi.org/10.1016/j.cell.2021.11.031)
+- Busslinger et al., Cell Reports, 2021 [DOI](https://doi.org/10.1016/j.celrep.2021.108819)
+- Qian et al., Cell Res., 2020 [DOI](https://doi.org/10.1038/s41422-020-0355-0)
+- Li et al., Nature Genetics, 2017 [DOI](https://doi.org/10.1038/ng.3818)
 
 
 ## Contents

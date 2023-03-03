@@ -43,7 +43,7 @@ Extended atlas (original count matrices used):
 - Gao et al., Nat. Cell. Biol., 2018, [DOI](https://doi.org/10.1038/s41556-018-0105-4)
 - Kong et al., Immunity, 2023, [DOI](https://doi.org/10.1016/j.immuni.2023.01.002)
 - Devlin et al., Gastroenterology, 2021 [DOI](https://doi.org/10.1053/j.gastro.2020.12.030)
-- Boland et al., Science Immunology, 2020 [DOI](DOI: 10.1126/sciimmunol.abb4432)
+- Boland et al., Science Immunology, 2020 [DOI](https://doi.org/10.1126/sciimmunol.abb4432)
 - The Tabula Sapiens Consortium, Stephen R Quake July 2021 [DOI](https://www.science.org/doi/10.1126/science.abl4896)
 
 

@@ -50,6 +50,7 @@ Extended atlas (original count matrices used):
 - Busslinger et al., Cell Reports, 2021 [DOI](https://doi.org/10.1016/j.celrep.2021.108819)
 - Qian et al., Cell Res., 2020 [DOI](https://doi.org/10.1038/s41422-020-0355-0)
 - Li et al., Nature Genetics, 2017 [DOI](https://doi.org/10.1038/ng.3818)
+- Egozi et al., biorxiv, 2022 [DOI](https://doi.org/10.1101/2022.03.01.482508)
 
 
 ## Contents

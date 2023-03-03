@@ -25,6 +25,8 @@ Core datasets (remapped using STAR v2.7.9a, human reference Cell Ranger 2020-A u
 - Kim et al., NPJ Precis. Oncol., 2022 [DOI](https://doi.org/10.1038/s41698-022-00251-1)
 - Madisoon et al., Genome Biol., 2019 [DOI](https://doi.org/10.1186/s13059-019-1906-x)
 - Pagella et al., iScience, 2021 [DOI](https://doi.org/10.1016/j.isci.2021.102405)
+- Chen et al., J. Dent. Res., 2022 [DOI](https://doi.org/10.1177/002203452210760)
+- Costa-da-Silva et al., iScience, 2022 [DOI](https://doi.org/10.1016/j.isci.2021.103592)
 
 Extended atlas (original count matrices used): 
 - Nowicki-Osuch et al., Science, 2021, [DOI](https://doi.org/10.1126/science.abd1449)

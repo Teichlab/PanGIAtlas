@@ -1,5 +1,5 @@
-# megagut
-Integration of single cell gut datasets. 
+# Pan-GI integration
+Integration of single cell datasets across the gastrointestinal tract. 
 
 <p align="center">
 
@@ -21,7 +21,6 @@ Core datasets (remapped using STAR v2.7.9a, human reference Cell Ranger 2020-A u
 - Uzzan et al., Nat Med, 2022, [DOI](https://doi.org/10.1038/s41591-022-01680-y)
 - Che et al., Cell Discov., 2021, [DOI](https://doi.org/10.1038/s41421-021-00312-y)
 - Domínguez Conde et al., Science, 2022, [DOI](https://doi.org/10.1126/science.abl5197)
-
 - Elmentaite et al., Nature,  2021, [DOI](https://doi.org/10.1038/s41586-021-03852-1)
 - Holloway et al., Cell Stem Cell, 2020, [DOI](https://doi.org/10.1016/j.stem.2020.11.008)
 - Yu et al., Cell, 2021, [DOI](https://doi.org/10.1016/j.cell.2021.04.028)
@@ -36,28 +35,10 @@ Core datasets (remapped using STAR v2.7.9a, human reference Cell Ranger 2020-A u
 - Costa-da-Silva et al., iScience, 2022 [DOI](https://doi.org/10.1016/j.isci.2021.103592)
 
 Extended atlas (original count matrices used): 
-- Nowicki-Osuch et al., Science, 2021, [DOI](https://doi.org/10.1126/science.abd1449)
-- Kumar et al., Cancer Discovery, 2022, [DOI](https://doi.org/10.1158/2159-8290.CD-21-0683)
-- Corridoni et al., Nature Medicine, 2020, [DOI](https://doi.org/10.1038/s41591-020-1003-4)
 - Smillie et al., Cell, 2019, [DOI](https://doi.org/10.1016/j.cell.2019.06.029)
-- Pelka et al., Cell, 2021, [DOI](https://doi.org/10.1016/j.cell.2021.08.003)
-- Qian et al., Cell Research, 2020, [DOI](https://doi.org/10.1038/s41422-020-0355-0)
-- Uhlitz et al., EMBO Molecular Med, 2021, [DOI](https://doi.org/10.15252/emmm.202114123)
-- Becker et al., Nat Genet, 2022, [DOI](https://doi.org/10.1038/s41588-022-01088-x)
-- Luoma et al, Cell 2021 [DOI](https://doi.org/10.1016/j.cell.2020.06.001)
-- Drokhlyansky et al., Cell, 2020, [DOI](https://doi.org/10.1016/j.cell.2020.08.003)
-- Cao et al., Science, 2020, [DOI](https://doi.org/10.1126/science.aba7721)
-- Gao et al., Nat. Cell. Biol., 2018, [DOI](https://doi.org/10.1038/s41556-018-0105-4)
 - Kong et al., Immunity, 2023, [DOI](https://doi.org/10.1016/j.immuni.2023.01.002)
-- Devlin et al., Gastroenterology, 2021 [DOI](https://doi.org/10.1053/j.gastro.2020.12.030)
-- Boland et al., Science Immunology, 2020 [DOI](https://doi.org/10.1126/sciimmunol.abb4432)
-- The Tabula Sapiens Consortium, Science 2022 [DOI](https://www.science.org/doi/10.1126/science.abl4896)
-- Zhang et al., Nature, 2018 [DOI](https://doi.org/10.1038/s41586-018-0694-x)
-- Chen et al., Cell, 2021 [DOI](https://doi.org/10.1016/j.cell.2021.11.031)
-- Busslinger et al., Cell Reports, 2021 [DOI](https://doi.org/10.1016/j.celrep.2021.108819)
-- Qian et al., Cell Res., 2020 [DOI](https://doi.org/10.1038/s41422-020-0355-0)
-- Li et al., Nature Genetics, 2017 [DOI](https://doi.org/10.1038/ng.3818)
-- Egozi et al., biorxiv, 2022 [DOI](https://doi.org/10.1101/2022.03.01.482508)
+- Garrido-Trigo et al., Nat Comms, 2023 [DOI](https://doi.org/10.1038/s41467-023-40156-6)
+
 
 
 ## Contents

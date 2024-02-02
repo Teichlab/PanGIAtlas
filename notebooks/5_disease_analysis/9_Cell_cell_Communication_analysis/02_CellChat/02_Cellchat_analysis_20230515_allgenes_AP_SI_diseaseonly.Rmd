@@ -1,0 +1,1397 @@
+---
+title: "Cellchat script"
+date: "15/05/23"
+author: "Amanda Oliver"
+output: html_notebook
+---
+
+Preprocessing in python: briefly I normalised and log transformed the raw counts data, filtered for celltypes/conditions of interest and export the normalised counts as csv (same as cellphoneDB), also export metadata for cell type (level_3_annot).
+
+Install CellChat (https://github.com/sqjin/CellChat)
+```{r}
+#devtools::install_github("jokergoo/ComplexHeatmap")
+#devtools::install_github("jokergoo/circlize")
+#devtools::install_github("sqjin/CellChat")
+```
+
+Install other dependencies
+```{r}
+#install.packages('NMF')
+```
+
+Load required libraries
+```{r}
+library(CellChat)
+library(patchwork)
+library(Seurat)
+library(SeuratObject)
+library(plyr)
+options(stringsAsFactors = FALSE)
+
+library(NMF)
+library(dplyr)
+#library(sceasy)
+library(igraph)
+library(Matrix)
+library(ggplot2)
+library(ggalluvial)
+library(circlize)
+```
+
+Load input data and meta data
+```{r}
+data <- read.table(file = '/nfs/team205/ao15/Megagut/Annotations_v3/disease_analysis/interactions/counts/pooled_disease.remapped.allgenes.AP_SI.counts.csv', header = T, row.names=1, sep=",", as.is=T)
+head(data[,1:10])
+meta <- read.csv(file = '/nfs/team205/ao15/Megagut/Annotations_v3/disease_analysis/interactions/meta/pooled_disease.remapped.allgenes.AP_SI.meta.csv', header = T, row.names=1,sep=",", as.is=T)
+
+```
+
+```{r}
+head(data[,1:10])
+```
+
+```{r}
+head(meta)
+```
+
+
+```{r}
+#to make the barcodes in counts consistent, for some reason the barcodes that read "AACCGCGCAGTTTACG-HCA_A_GT12934998" are being changed to "AACCGCGCAGTTTACG.HCA_A_GT12934998"
+colnames(data) = gsub('[.]', '-', colnames(data))
+#head(data[,1:10])
+
+#quickly list barcodes by transposing dataframe
+#data_t <- t(data)
+#row.names(data_t)
+head(data[,1:10])
+```
+
+Make seurat object from csv
+```{r}
+srat <- CreateSeuratObject(data, project = "MUC6", assay = "RNA", min.cells = 0, min.features = 0, meta.data = meta)
+```
+
+From here the script follows the CellChat tutorial
+```{r}
+data.input <- srat@assays$RNA@counts
+
+cell.use = rownames(meta)
+```
+
+
+Create a cellchat object:
+```{r}
+cellchat <- createCellChat(object = data.input, meta = meta, group.by = "level_3_annot")
+```
+
+```{r}
+cellchat <- addMeta(cellchat, meta = meta)
+cellchat <- setIdent(cellchat, ident.use = "level_3_annot") # set "labels" as default cell identity
+levels(cellchat@idents) # show factor levels of the cell labels
+groupSize <- as.numeric(table(cellchat@idents)) # number of cells in each cell group
+```
+
+```{r}
+CellChatDB <- CellChatDB.human # use CellChatDB.mouse if running on mouse data
+showDatabaseCategory(CellChatDB)
+```
+
+```{r}
+# Show the structure of the database
+dplyr::glimpse(CellChatDB$interaction)
+#> Rows: 1,939
+#> Columns: 11
+#> $ interaction_name   <chr> "TGFB1_TGFBR1_TGFBR2", "TGFB2_TGFBR1_TGFBR2", "TGF…
+#> $ pathway_name       <chr> "TGFb", "TGFb", "TGFb", "TGFb", "TGFb", "TGFb", "T…
+#> $ ligand             <chr> "TGFB1", "TGFB2", "TGFB3", "TGFB1", "TGFB1", "TGFB…
+#> $ receptor           <chr> "TGFbR1_R2", "TGFbR1_R2", "TGFbR1_R2", "ACVR1B_TGF…
+#> $ agonist            <chr> "TGFb agonist", "TGFb agonist", "TGFb agonist", "T…
+#> $ antagonist         <chr> "TGFb antagonist", "TGFb antagonist", "TGFb antago…
+#> $ co_A_receptor      <chr> "", "", "", "", "", "", "", "", "", "", "", "", ""…
+#> $ co_I_receptor      <chr> "TGFb inhibition receptor", "TGFb inhibition recep…
+#> $ evidence           <chr> "KEGG: hsa04350", "KEGG: hsa04350", "KEGG: hsa0435…
+#> $ annotation         <chr> "Secreted Signaling", "Secreted Signaling", "Secre…
+#> $ interaction_name_2 <chr> "TGFB1 - (TGFBR1+TGFBR2)", "TGFB2 - (TGFBR1+TGFBR2…
+
+# use a subset of CellChatDB for cell-cell communication analysis
+#CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling") # use Secreted Signaling
+# use all CellChatDB for cell-cell communication analysis
+CellChatDB.use <- CellChatDB # simply use the default CellChatDB
+
+# set the used database in the object
+cellchat@DB <- CellChatDB.use
+```
+
+```{r}
+cellchat <- subsetData(cellchat) # subset the expression data of signaling genes for saving computation cost
+future::plan("multiprocess", workers = 4) # do parallel
+```
+
+```{r}
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+cellchat <- projectData(cellchat, PPI.human)
+```
+
+```{r}
+#note trim is referring to Cellchats method for calculating the truncated mean, default is 0.25 meaning expression will be set to 0 if 25% or less of cells of a given cell type express the ligand/receptor. By default, I've changed this to 10% to account for genes expressed in a small portion of cells, that could still be biologically relevant. I beleive this is more similar to CellphoneDB cut offs anyway.
+
+cellchat <- computeCommunProb(cellchat, raw.use = TRUE, type = "truncatedMean", trim = 0.1)
+# Filter out the cell-cell communication if there are only few number of cells in certain cell groups
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+```
+
+
+
+Export results as a data frame
+```{r}
+df.net <- subsetCommunication(cellchat)
+head(df.net)
+write.csv(df.net, "/nfs/team205/ao15/Megagut/Annotations_v3/disease_analysis/interactions/pooled_disease.remapped.allgenes.AP_SI.cellchat_output_230523.csv", row.names = TRUE)
+```
+
+```{r}
+cellchat <- computeCommunProbPathway(cellchat)
+cellchat <- aggregateNet(cellchat)
+```
+
+```{r}
+groupSize <- as.numeric(table(cellchat@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(cellchat@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions",vertex.label.cex = 0.5)
+netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength", vertex.label.cex = 0.5)
+```
+```{r}
+# Compute the network centrality scores
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP") # the slot 'netP' means the inferred intercellular communication network of signaling pathways
+# Visualize the computed centrality scores using heatmap, allowing ready identification of major signaling roles of cell groups
+#netAnalysis_signalingRole_network(cellchat, signaling = pathways.show, width = 8, height = 2.5, font.size = 10)
+```
+
+```{r}
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat, pattern = "outgoing", width = 5, height = 10, font.size = 3)
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat, pattern = "incoming", width = 5, height = 10, font.size = 3)
+pdf(file ="all_genes_plots/diseaseonly/cellchat_signalling_heatmap.pdf", width = 10, height =20)
+ht1 + ht2
+dev.off()
+#personally I find this plot one of the most useful to look at an overview of signaling pathways, and then use the other functions to plot them in whichever way makes sense
+```
+
+```{r}
+#save cellchat object
+saveRDS(cellchat, file = "/nfs/team205/ao15/Megagut/Annotations_v3/disease_analysis/interactions/pooled_disease.remapped.allgenes.AP_SI.cellchat_object.rds")
+```
+
+
+```{r}
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+gg1 <- netAnalysis_signalingRole_scatter(cellchat)
+levels(cellchat@idents)
+gg1
+#this plot is helpful to look at the overall signaling roles of cell types (ie. are they mostly sending signals, receiving signals or a mixture of both)
+```
+```{r fig.height= 10, fig.width=10}
+mat <- cellchat@net$weight
+par(mfrow = c(2,2), xpd=TRUE)
+for (i in 1:nrow(mat)) {
+  mat2 <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat2[i, ] <- mat[i, ]
+  netVisual_circle(mat2, vertex.weight = groupSize, weight.scale = T, edge.weight.max = max(mat), title.name = rownames(mat)[i])
+}
+```
+
+```{r}
+cellchat@netP$pathways
+```
+
+
+```{r fig.height=10}
+pathways.show <- c("MHC-II") 
+# Hierarchy plot
+# Here we define `vertex.receive` so that the left portion of the hierarchy plot shows signaling to fibroblast and the right portion shows signaling to immune cells 
+vertex.receiver = seq(4,8) # a numeric vector. 
+netVisual_aggregate(cellchat, signaling = pathways.show,  vertex.receiver = vertex.receiver)
+```
+
+```{r fig.height=15, fig.width=22}
+pathways.show <- c("CCL") 
+# Heatmap
+par(mfrow=c(1,1))
+pdf(file ="all_genes_plots/diseaseonly/cellchat_CCLheatmap.pdf", width = 20, height =16)
+netVisual_heatmap(cellchat, signaling = pathways.show, color.heatmap = "Reds",width=50,height=50,font.size=6)
+```
+```{r fig.height=15, fig.width=22}
+pathways.show <- c("CXCL") 
+# Heatmap
+par(mfrow=c(1,1))
+pdf(file ="all_genes_plots/diseaseonly/cellchat_CXCLheatmap.pdf", width = 20, height =16)
+netVisual_heatmap(cellchat, signaling = pathways.show, color.heatmap = "Reds",width=50,height=50,font.size=6)
+```
+
+```{r fig.height=15, fig.width=22}
+pathways.show <- c("MHC-II") 
+# Heatmap
+par(mfrow=c(1,1))
+pdf(file ="all_genes_plots/diseaseonly/cellchat_MHCIIheatmap.pdf", width = 20, height =16)
+netVisual_heatmap(cellchat, signaling = pathways.show, color.heatmap = "Reds",width=50,height=50,font.size=4)
+```
+
+
+
+```{r fig.height=8, fig.width=8}
+par(mfrow=c(1,1))
+pdf(file ="all_genes_plots/diseaseonly/cellchat_CCLchord.pdf", width = 20, height =16)
+netVisual_aggregate(cellchat, signaling = 'CCL', layout = "chord", remove.isolate = TRUE, scale=TRUE)
+dev.off()
+```
+
+
+```{r fig.height=8, fig.width=8}
+par(mfrow=c(1,1))
+pdf(file ="all_genes_plots/diseaseonly/cellchat_CXCLchord.pdf", width = 20, height =16)
+netVisual_aggregate(cellchat, signaling = 'CXCL', layout = "chord", remove.isolate = TRUE, scale=TRUE)
+dev.off()
+```
+
+```{r fig.height=8, fig.width=8}
+par(mfrow=c(1,1))
+pdf(file ="all_genes_plots/diseaseonly/cellchat_MHCIIchord.pdf", width = 20, height =16)
+netVisual_aggregate(cellchat, signaling = 'MHC-II', layout = "chord", remove.isolate = TRUE, scale=TRUE)
+dev.off()
+```
+
+
+```{r fig.height=15, fig.width=15}
+# Chord diagram
+#group.cellType <- c(rep("Fibro", 2), rep("B", 3), rep("SMG", 3)) # grouping cell clusters into fibroblast, DC and TC cells
+#names(group.cellType) <- levels(cellchat@idents)
+#netVisual_chord_cell(cellchat, signaling = pathways.show, group = group.cellType, title.name = paste0(pathways.show, " signaling network"))
+netVisual_chord_cell(cellchat, signaling = pathways.show, title.name = paste0(pathways.show, " signaling network"))
+```
+
+```{r}
+netAnalysis_contribution(cellchat, signaling = "CXCL")
+#to get a cursory look at which L-R pairs within a given network, can also look at the full overview on the cellchat database http://www.cellchat.org/cellchatdb/
+```
+
+
+```{r}
+netAnalysis_contribution(cellchat, signaling = "CCL")
+#to get a cursory look at which L-R pairs within a given network, can also look at the full overview on the cellchat database http://www.cellchat.org/cellchatdb/
+```
+
+
+```{r}
+netAnalysis_contribution(cellchat, signaling = "MHC-II")
+#to get a cursory look at which L-R pairs within a given network, can also look at the full overview on the cellchat database http://www.cellchat.org/cellchatdb/
+```
+```{r}
+netAnalysis_contribution(cellchat, signaling = "THBS")
+#to get a cursory look at which L-R pairs within a given network, can also look at the full overview on the cellchat database http://www.cellchat.org/cellchatdb/
+```
+
+```{r}
+pathways.show = "CCL"
+pairLR.CCL <- extractEnrichedLR(cellchat, signaling = pathways.show, geneLR.return = FALSE)
+LR.show <- pairLR.CCL[6,]
+pdf(file ="all_genes_plots/diseaseonly/cellchat_CCLnetvis_individual.pdf", width = 20, height =16)
+netVisual_individual(cellchat, signaling = pathways.show, pairLR.use = LR.show, layout = "chord")
+
+```
+
+```{r}
+netVisual_aggregate(cellchat, signaling = 'CXCL', layout = "circle")
+```
+
+```{r}
+netVisual_aggregate(cellchat, signaling = 'SAA', layout = "circle")
+```
+
+```{r fig.height=30}
+netVisual_bubble(cellchat, sources.use = 57, remove.isolate = FALSE)
+```
+
+
+
+```{r fig.height=30}
+pdf(file ="all_genes_plots/diseaseonly/cellchat_MUC6source_netvisualbubble.pdf", width = 20, height =30)
+netVisual_bubble(cellchat, sources.use = 57, remove.isolate = FALSE)
+```
+```{r fig.height=30}
+pdf(file ="all_genes_plots/diseaseonly/cellchat_MUC6target_netvisualbubble.pdf", width = 20, height =30)
+netVisual_bubble(cellchat, targets.use = 57, remove.isolate = FALSE)
+```
+
+```{r fig.height=40}
+pdf(file ="all_genes_plots/diseaseonly/cellchat_OralFibrosource_netvisualbubble.pdf", width = 20, height =40)
+netVisual_bubble(cellchat, sources.use = 63, remove.isolate = FALSE)
+```
+haven't run any of this yet -->
+
+
+```{r}
+netVisual_chord_gene <- function(object, slot.name = "net", color.use = NULL,
+                                 signaling = NULL, pairLR.use = NULL, net = NULL,
+                                 sources.use = NULL, targets.use = NULL,
+                                 lab.cex = 0.8,small.gap = 1, big.gap = 10, annotationTrackHeight = c(0.03),
+                                 link.visible = TRUE, scale = FALSE, directional = 1, link.target.prop = TRUE, reduce = -1,
+                                 transparency = 0.4, link.border = NA,
+                                 title.name = NULL, legend.pos.x = 20, legend.pos.y = 20, show.legend = TRUE,
+                                 thresh = 0.05,
+                                 ...){
+  if (!is.null(pairLR.use)) {
+    if (!is.data.frame(pairLR.use)) {
+      stop("pairLR.use should be a data frame with a signle column named either 'interaction_name' or 'pathway_name' ")
+    } else if ("pathway_name" %in% colnames(pairLR.use)) {
+      message("slot.name is set to be 'netP' when pairLR.use contains signaling pathways")
+      slot.name = "netP"
+    }
+  }
+
+  if (!is.null(pairLR.use) & !is.null(signaling)) {
+    stop("Please do not assign values to 'signaling' when using 'pairLR.use'")
+  }
+
+  if (is.null(net)) {
+    prob <- slot(object, "net")$prob
+    pval <- slot(object, "net")$pval
+    prob[pval > thresh] <- 0
+    net <- reshape2::melt(prob, value.name = "prob")
+    colnames(net)[1:3] <- c("source","target","interaction_name")
+
+    pairLR = dplyr::select(object@LR$LRsig, c("interaction_name_2", "pathway_name",  "ligand",  "receptor" ,"annotation","evidence"))
+    idx <- match(net$interaction_name, rownames(pairLR))
+    temp <- pairLR[idx,]
+    net <- cbind(net, temp)
+  }
+
+  if (!is.null(signaling)) {
+    pairLR.use <- data.frame()
+    for (i in 1:length(signaling)) {
+      pairLR.use.i <- searchPair(signaling = signaling[i], pairLR.use = object@LR$LRsig, key = "pathway_name", matching.exact = T, pair.only = T)
+      pairLR.use <- rbind(pairLR.use, pairLR.use.i)
+    }
+  }
+
+  if (!is.null(pairLR.use)){
+    if ("interaction_name" %in% colnames(pairLR.use)) {
+      net <- subset(net,interaction_name %in% pairLR.use$interaction_name)
+    } else if ("pathway_name" %in% colnames(pairLR.use)) {
+      net <- subset(net, pathway_name %in% as.character(pairLR.use$pathway_name))
+    }
+  }
+
+  if (slot.name == "netP") {
+    net <- dplyr::select(net, c("source","target","pathway_name","prob"))
+    net$source_target <- paste(net$source, net$target, sep = "sourceTotarget")
+    net <- net %>% dplyr::group_by(source_target, pathway_name) %>% dplyr::summarize(prob = sum(prob))
+    a <- stringr::str_split(net$source_target, "sourceTotarget", simplify = T)
+    net$source <- as.character(a[, 1])
+    net$target <- as.character(a[, 2])
+    net$ligand <- net$pathway_name
+    net$receptor <- " "
+  }
+
+  # keep the interactions associated with sources and targets of interest
+  if (!is.null(sources.use)){
+    if (is.numeric(sources.use)) {
+      sources.use <- levels(object@idents)[sources.use]
+    }
+    net <- subset(net, source %in% sources.use)
+  } else {
+    sources.use <- levels(object@idents)
+  }
+  if (!is.null(targets.use)){
+    if (is.numeric(targets.use)) {
+      targets.use <- levels(object@idents)[targets.use]
+    }
+    net <- subset(net, target %in% targets.use)
+  } else {
+    targets.use <- levels(object@idents)
+  }
+  # remove the interactions with zero values
+  df <- subset(net, prob > 0)
+
+  if (nrow(df) == 0) {
+    stop("No signaling links are inferred! ")
+  }
+
+  if (length(unique(net$ligand)) == 1) {
+    message("You may try the function `netVisual_chord_cell` for visualizing individual signaling pathway")
+  }
+
+  df$id <- 1:nrow(df)
+  # deal with duplicated sector names
+  ligand.uni <- unique(df$ligand)
+  for (i in 1:length(ligand.uni)) {
+    df.i <- df[df$ligand == ligand.uni[i], ]
+    source.uni <- unique(df.i$source)
+    for (j in 1:length(source.uni)) {
+      df.i.j <- df.i[df.i$source == source.uni[j], ]
+      df.i.j$ligand <- paste0(df.i.j$ligand, paste(rep(' ',j-1),collapse = ''))
+      df$ligand[df$id %in% df.i.j$id] <- df.i.j$ligand
+    }
+  }
+  receptor.uni <- unique(df$receptor)
+  for (i in 1:length(receptor.uni)) {
+    df.i <- df[df$receptor == receptor.uni[i], ]
+    target.uni <- unique(df.i$target)
+    for (j in 1:length(target.uni)) {
+      df.i.j <- df.i[df.i$target == target.uni[j], ]
+      df.i.j$receptor <- paste0(df.i.j$receptor, paste(rep(' ',j-1),collapse = ''))
+      df$receptor[df$id %in% df.i.j$id] <- df.i.j$receptor
+    }
+  }
+
+  cell.order.sources <- levels(object@idents)[levels(object@idents) %in% sources.use]
+  cell.order.targets <- levels(object@idents)[levels(object@idents) %in% targets.use]
+
+  df$source <- factor(df$source, levels = cell.order.sources)
+  df$target <- factor(df$target, levels = cell.order.targets)
+  # df.ordered.source <- df[with(df, order(source, target, -prob)), ]
+  # df.ordered.target <- df[with(df, order(target, source, -prob)), ]
+  df.ordered.source <- df[with(df, order(source, -prob)), ]
+  df.ordered.target <- df[with(df, order(target, -prob)), ]
+
+  order.source <- unique(df.ordered.source[ ,c('ligand','source')])
+  order.target <- unique(df.ordered.target[ ,c('receptor','target')])
+
+  # define sector order
+  order.sector <- c(order.source$ligand, order.target$receptor)
+
+  # define cell type color
+  if (is.null(color.use)){
+    color.use = scPalette(nlevels(object@idents))
+    names(color.use) <- levels(object@idents)
+    color.use <- color.use[levels(object@idents) %in% as.character(union(df$source,df$target))]
+  } else if (is.null(names(color.use))) {
+    names(color.use) <- levels(object@idents)
+    color.use <- color.use[levels(object@idents) %in% as.character(union(df$source,df$target))]
+  }
+
+  # define edge color
+  edge.color <- color.use[as.character(df.ordered.source$source)]
+  names(edge.color) <- as.character(df.ordered.source$source)
+
+  # define grid colors
+  grid.col.ligand <- color.use[as.character(order.source$source)]
+  names(grid.col.ligand) <- as.character(order.source$source)
+  grid.col.receptor <- color.use[as.character(order.target$target)]
+  names(grid.col.receptor) <- as.character(order.target$target)
+  grid.col <- c(as.character(grid.col.ligand), as.character(grid.col.receptor))
+  names(grid.col) <- order.sector
+
+  df.plot <- df.ordered.source[ ,c('ligand','receptor','prob')]
+
+  if (directional == 2) {
+    link.arr.type = "triangle"
+  } else {
+    link.arr.type = "big.arrow"
+  }
+  circos.clear()
+  chordDiagram(df.plot,
+               order = order.sector,
+               col = edge.color,
+               grid.col = grid.col,
+               transparency = transparency,
+               link.border = link.border,
+               directional = directional,
+               direction.type = c("diffHeight","arrows"),
+               link.arr.type = link.arr.type,
+               annotationTrack = "grid",
+               annotationTrackHeight = annotationTrackHeight,
+               preAllocateTracks = list(track.height = max(strwidth(order.sector))),
+               small.gap = small.gap,
+               big.gap = big.gap,
+               link.visible = link.visible,
+               scale = scale,
+               link.target.prop = link.target.prop,
+               reduce = reduce,
+               ...)
+
+  circos.track(track.index = 1, panel.fun = function(x, y) {
+    xlim = get.cell.meta.data("xlim")
+    xplot = get.cell.meta.data("xplot")
+    ylim = get.cell.meta.data("ylim")
+    sector.name = get.cell.meta.data("sector.index")
+    circos.text(mean(xlim), ylim[1], sector.name, facing = "bending", niceFacing = TRUE, adj=c(0.5,0.01),cex = lab.cex)
+  }, bg.border = NA)
+
+
+  # https://jokergoo.github.io/circlize_book/book/legends.html
+  if (show.legend) {
+    lgd <- ComplexHeatmap::Legend(at = names(color.use), type = "grid", legend_gp = grid::gpar(fill = color.use), title = "Cell State")
+    ComplexHeatmap::draw(lgd, x = unit(1, "npc")-unit(legend.pos.x, "mm"), y = unit(legend.pos.y, "mm"), just = c("right", "bottom"))
+  }
+
+  circos.clear()
+  if(!is.null(title.name)){
+    text(-0, 1.02, title.name, cex=1)
+  }
+  gg <- recordPlot()
+  return(gg)
+}
+```
+
+```{r fig.height=15,fig.width=15}
+netVisual_chord_gene(cellchat, signaling = c("SAA"),legend.pos.x = 8, scale=FALSE)#, sources.use = c(1,2,3,4,5,6,7), targets.use = c(1,2,3,4,5,6,7), lab.cex=1,  color.use = c('#CD6600', '#FF8C00', '#CD00CD','#0000EE', '#8FBC8F','#C1FFC1','#228B22')) 
+```
+```{r}
+colours = c('#db9602',#   'B_GC_I':
+ '#e2d138',#   'B_GC_I':
+'#a33c22',#   'B_memory':
+  '#9b0319',# 'B_naive':
+  '#f76c56',# 'B_plasma_IgA1':
+  '#d6558d',# 'B_plasma_IgA2':
+'#632f17',#   'B_plasma_IgG':
+  '#c66d31',# 'B_plasma_IgM':
+  '#9e53db',# 'B_plasmablast':
+  '#8a4682',# 'B_preB':
+'#d34794',#   'B_proB':
+'#39997c',#   'BEST4_enterocyte_colonocyte':
+'#bd7879',#   'Crypt_fibroblast_PI16':
+'#8c543f',#   'DC_cDC1':
+'#cfdb65',#   'DC_cDC2':
+'#c7a642',#   'DC_langerhans':
+'#e6a519',#   'DC_migratory':
+'#bdb197',#   'DC_pDC':
+'#fa6e6e',#   'EC_arterial_1':
+'#ca6092',#   'EC_arterial_2':
+'#855f9a',#   'EC_capillary':
+'#fac06e',#   'EC_cycling':
+'#999999',#   'EC_lymphatic':
+'#2a4858',# 'EC_venous':
+'#DBA507',#   'Enteric_neural_crest_cycling':
+'#e1b5e6',#     'Enterocyte':
+'#68b7fc',#   'Enteroendocrine':
+  '#8b4eba',# 'Eosinophil/basophil':
+  '#c924b9',# 'Epithelial_stem':
+  '#0e539c',# 'Erythrocytes':
+  '#f0c134',# 'Fibroblast_reticular':
+'#f0982c',#   'Follicular_DC':
+'#3fafb5',#   'gdT':
+'#26daf2',#     'gdT_naive':
+'#8EC7D2',#   'Glial_1':
+'#0D6986',#   'Glial_2':
+'#053240',#   'Glial_3':
+'#a8c545',#   'Glial/Enteric_neural_crest':
+'#6c9939',#     'Goblet':
+'#d1d14f',# 'Goblet_cycling':
+'#e9f7ad',# 'Goblet_progenitor':
+'#778c00',#     'ILC3':
+'#AAC789',#   'Immune_recruiting_pericyte':
+'#e95e50',#   'Lamina_propria_fibroblast_ADAMDEC1':
+'#486626',# 'Macrophage':
+'#caf9cf',#   'Macrophage_CD5L':
+'#8fd9d0',#   'Macrophage_LYVE1':
+'#a5f002',#   'Macrophage_MMP9':
+'#42c7ac',#   'Macrophage_TREM2':
+'#21b796',#     'MAIT':
+'#826e91',#   'Mast':
+'#c730aa',#   'Megakaryocyte/platelet':
+'#8F6592',#   'Mesothelium':
+'#e55b85',#   'Microfold':
+'#2a497a',#   'Mono/neutrophil_MPO':
+'#5baf07',#   'Monocyte':
+'#f7b37c',#   'Mucous_gland_neck':
+'#CCAE91',#   'Myofibroblast':
+'#c50637',#   'Neuroblast':
+'#0c1e0e',#   'NK_CD16':
+'#3f8c08',#   'NK_CD56bright':
+'#63A0C0',#     'Oesophagus_fibroblast':
+'#303267',#   'Oral_mucosa_fibroblast':
+'#79508f',#   'Paneth':
+'#437356',#     'Pericyte':
+'#522e25',#   'Rectum_fibroblast':
+'#d9b74a',#   'Surface_foveolar':
+'#c260ff',#   'T/NK_cycling':
+'#b85f1c',#   'TA':
+'#5e0b30',# 'Tfh':
+'#5e3c55',#   'Tfh_naive':
+'#9c53bc',#     'Tnaive/cm_CD4':
+'#5ca4ce',#   'Tnaive/cm_CD8':
+'#f98261',#     'Treg':
+'#e5c510',# 'Treg_IL10':
+'#8107ed',#   'Trm_CD4':
+'#2844c1',#   'Trm_CD8':
+'#1e093f',#   'Trm_Th17':
+'#256b87',#   'Trm/em_CD8':
+'#9d9dff',#   'Tuft':
+'#1E4147',#   'Vascular_smooth_muscle':
+'#d64582'#   'Villus_fibroblast_F3':
+)
+```
+
+
+
+
+
+```{r fig.height=5,fig.width=5}
+netVisual_chord_gene(cellchat, signaling = c("SAA"), legend.pos.x = 8, scale=FALSE,sources.use = c(30,32,56,57,63), targets.use = c(30,32,56,57,63), lab.cex=1,color.use = colours) 
+```
+```{r}
+netVisual_chord_gene <- function(object, slot.name = "net", color.use = NULL,
+                                 signaling = NULL, pairLR.use = NULL, net = NULL,
+                                 sources.use = NULL, targets.use = NULL,
+                                 lab.cex = 0.8,small.gap = 1, big.gap = 10, annotationTrackHeight = c(0.03),
+                                 link.visible = TRUE, scale = FALSE, directional = 1, link.target.prop = TRUE, reduce = -1,
+                                 transparency = 0.4, link.border = NA,
+                                 title.name = NULL, legend.pos.x = 20, legend.pos.y = 20, show.legend = TRUE,
+                                 thresh = 0.05,
+                                 ...){
+  if (!is.null(pairLR.use)) {
+    if (!is.data.frame(pairLR.use)) {
+      stop("pairLR.use should be a data frame with a signle column named either 'interaction_name' or 'pathway_name' ")
+    } else if ("pathway_name" %in% colnames(pairLR.use)) {
+      message("slot.name is set to be 'netP' when pairLR.use contains signaling pathways")
+      slot.name = "netP"
+    }
+  }
+
+  if (!is.null(pairLR.use) & !is.null(signaling)) {
+    stop("Please do not assign values to 'signaling' when using 'pairLR.use'")
+  }
+
+  if (is.null(net)) {
+    prob <- slot(object, "net")$prob
+    pval <- slot(object, "net")$pval
+    prob[pval > thresh] <- 0
+    net <- reshape2::melt(prob, value.name = "prob")
+    colnames(net)[1:3] <- c("source","target","interaction_name")
+
+    pairLR = dplyr::select(object@LR$LRsig, c("interaction_name_2", "pathway_name",  "ligand",  "receptor" ,"annotation","evidence"))
+    idx <- match(net$interaction_name, rownames(pairLR))
+    temp <- pairLR[idx,]
+    net <- cbind(net, temp)
+  }
+
+  if (!is.null(signaling)) {
+    pairLR.use <- data.frame()
+    for (i in 1:length(signaling)) {
+      pairLR.use.i <- searchPair(signaling = signaling[i], pairLR.use = object@LR$LRsig, key = "pathway_name", matching.exact = T, pair.only = T)
+      pairLR.use <- rbind(pairLR.use, pairLR.use.i)
+    }
+  }
+
+  if (!is.null(pairLR.use)){
+    if ("interaction_name" %in% colnames(pairLR.use)) {
+      net <- subset(net,interaction_name %in% pairLR.use$interaction_name)
+    } else if ("pathway_name" %in% colnames(pairLR.use)) {
+      net <- subset(net, pathway_name %in% as.character(pairLR.use$pathway_name))
+    }
+  }
+
+  if (slot.name == "netP") {
+    net <- dplyr::select(net, c("source","target","pathway_name","prob"))
+    net$source_target <- paste(net$source, net$target, sep = "sourceTotarget")
+    net <- net %>% dplyr::group_by(source_target, pathway_name) %>% dplyr::summarize(prob = sum(prob))
+    a <- stringr::str_split(net$source_target, "sourceTotarget", simplify = T)
+    net$source <- as.character(a[, 1])
+    net$target <- as.character(a[, 2])
+    net$ligand <- net$pathway_name
+    net$receptor <- " "
+  }
+
+  # keep the interactions associated with sources and targets of interest
+  if (!is.null(sources.use)){
+    if (is.numeric(sources.use)) {
+      sources.use <- levels(object@idents)[sources.use]
+    }
+    net <- subset(net, source %in% sources.use)
+  } else {
+    sources.use <- levels(object@idents)
+  }
+  if (!is.null(targets.use)){
+    if (is.numeric(targets.use)) {
+      targets.use <- levels(object@idents)[targets.use]
+    }
+    net <- subset(net, target %in% targets.use)
+  } else {
+    targets.use <- levels(object@idents)
+  }
+  # remove the interactions with zero values
+  df <- subset(net, prob > 0)
+
+  if (nrow(df) == 0) {
+    stop("No signaling links are inferred! ")
+  }
+
+  if (length(unique(net$ligand)) == 1) {
+    message("You may try the function `netVisual_chord_cell` for visualizing individual signaling pathway")
+  }
+
+  df$id <- 1:nrow(df)
+  # deal with duplicated sector names
+  ligand.uni <- unique(df$ligand)
+  for (i in 1:length(ligand.uni)) {
+    df.i <- df[df$ligand == ligand.uni[i], ]
+    source.uni <- unique(df.i$source)
+    for (j in 1:length(source.uni)) {
+      df.i.j <- df.i[df.i$source == source.uni[j], ]
+      df.i.j$ligand <- paste0(df.i.j$ligand, paste(rep(' ',j-1),collapse = ''))
+      df$ligand[df$id %in% df.i.j$id] <- df.i.j$ligand
+    }
+  }
+  receptor.uni <- unique(df$receptor)
+  for (i in 1:length(receptor.uni)) {
+    df.i <- df[df$receptor == receptor.uni[i], ]
+    target.uni <- unique(df.i$target)
+    for (j in 1:length(target.uni)) {
+      df.i.j <- df.i[df.i$target == target.uni[j], ]
+      df.i.j$receptor <- paste0(df.i.j$receptor, paste(rep(' ',j-1),collapse = ''))
+      df$receptor[df$id %in% df.i.j$id] <- df.i.j$receptor
+    }
+  }
+
+  cell.order.sources <- levels(object@idents)[levels(object@idents) %in% sources.use]
+  cell.order.targets <- levels(object@idents)[levels(object@idents) %in% targets.use]
+
+  df$source <- factor(df$source, levels = cell.order.sources)
+  df$target <- factor(df$target, levels = cell.order.targets)
+  # df.ordered.source <- df[with(df, order(source, target, -prob)), ]
+  # df.ordered.target <- df[with(df, order(target, source, -prob)), ]
+  df.ordered.source <- df[with(df, order(source, -prob)), ]
+  df.ordered.target <- df[with(df, order(target, -prob)), ]
+
+  order.source <- unique(df.ordered.source[ ,c('ligand','source')])
+  order.target <- unique(df.ordered.target[ ,c('receptor','target')])
+
+  # define sector order
+  order.sector <- c(order.source$ligand, order.target$receptor)
+
+  # define cell type color
+  if (is.null(color.use)){
+    color.use = scPalette(nlevels(object@idents))
+    names(color.use) <- levels(object@idents)
+    color.use <- color.use[levels(object@idents) %in% as.character(union(df$source,df$target))]
+  } else if (is.null(names(color.use))) {
+    names(color.use) <- levels(object@idents)
+    color.use <- color.use[levels(object@idents) %in% as.character(union(df$source,df$target))]
+  }
+
+  # define edge color
+  edge.color <- color.use[as.character(df.ordered.source$source)]
+  names(edge.color) <- as.character(df.ordered.source$source)
+
+  # define grid colors
+  grid.col.ligand <- color.use[as.character(order.source$source)]
+  names(grid.col.ligand) <- as.character(order.source$source)
+  grid.col.receptor <- color.use[as.character(order.target$target)]
+  names(grid.col.receptor) <- as.character(order.target$target)
+  grid.col <- c(as.character(grid.col.ligand), as.character(grid.col.receptor))
+  names(grid.col) <- order.sector
+
+  df.plot <- df.ordered.source[ ,c('ligand','receptor','prob')]
+
+  if (directional == 2) {
+    link.arr.type = "triangle"
+  } else {
+    link.arr.type = "big.arrow"
+  }
+  circos.clear()
+  chordDiagram(df.plot,
+               order = order.sector,
+               col = edge.color,
+               grid.col = grid.col,
+               transparency = transparency,
+               link.border = link.border,
+               directional = directional,
+               direction.type = c("diffHeight","arrows"),
+               link.arr.type = link.arr.type,
+               annotationTrack = "grid",
+               annotationTrackHeight = annotationTrackHeight,
+               preAllocateTracks = list(track.height = max(strwidth(order.sector))),
+               small.gap = small.gap,
+               big.gap = big.gap,
+               link.visible = link.visible,
+               scale = scale,
+               link.target.prop = link.target.prop,
+               reduce = reduce,
+               ...)
+
+  circos.track(track.index = 1, panel.fun = function(x, y) {
+    xlim = get.cell.meta.data("xlim")
+    xplot = get.cell.meta.data("xplot")
+    ylim = get.cell.meta.data("ylim")
+    sector.name = get.cell.meta.data("sector.index")
+    circos.text(mean(xlim), ylim[1], sector.name,facing = "clockwise", niceFacing = TRUE, adj=c(0.5,0.01),cex = lab.cex)
+  }, bg.border = NA)
+
+
+  # https://jokergoo.github.io/circlize_book/book/legends.html
+  if (show.legend) {
+    lgd <- ComplexHeatmap::Legend(at = names(color.use), type = "grid", legend_gp = grid::gpar(fill = color.use), title = "Cell State")
+    ComplexHeatmap::draw(lgd, x = unit(1, "npc")-unit(legend.pos.x, "mm"), y = unit(legend.pos.y, "mm"), just = c("right", "bottom"))
+  }
+
+  circos.clear()
+  if(!is.null(title.name)){
+    text(-0, 1.02, title.name, cex=1)
+  }
+  gg <- recordPlot()
+  return(gg)
+}
+```
+
+```{r fig.height=15,fig.width=15}
+netVisual_chord_gene(cellchat, signaling = c("CXCL"), legend.pos.x = 8, scale=FALSE,sources.use = c(57,63), lab.cex=0.5,color.use = colours) 
+```
+```{r fig.height=15,fig.width=15}
+netVisual_chord_gene(cellchat, signaling = c("CXCL"), legend.pos.x = 8, scale=TRUE,sources.use = c(57,63),targets.use =c(24,29,46,50,60,62,69,70,72,73), lab.cex=0.5,color.use = colours) 
+```
+```{r fig.height=15,fig.width=15}
+pdf(file ="all_genes_plots/cellchat_MUC6OralFibrosource_cxclchord.pdf", width = 15, height =15)
+netVisual_chord_gene(cellchat, signaling = c("CXCL"), legend.pos.x = 8, scale=TRUE,sources.use = c(57,63),targets.use =c(24,29,46,50,60,62,69,70,72,73), lab.cex=0.5,color.use = colours) 
+```
+
+```{r fig.height=15,fig.width=15}
+netVisual_chord_gene(cellchat, signaling = c("CXCL"), legend.pos.x = 8, scale=TRUE,sources.use = c(57), lab.cex=1,color.use = colours) 
+```
+
+
+```{r fig.height=15,fig.width=15}
+pdf(file ="all_genes_plots/cellchat_MUC6source_cxclchord.pdf", width = 15, height =15)
+netVisual_chord_gene(cellchat, signaling = c("CXCL"), legend.pos.x = 8, scale=TRUE,sources.use = c(57), lab.cex=1,color.use = colours) 
+```
+
+
+```{r fig.height=15,fig.width=15}
+netVisual_chord_gene(cellchat, signaling = c("CCL"), legend.pos.x = 8, scale=FALSE,sources.use = c(57,63), lab.cex=0.5,color.use = colours) 
+```
+
+```{r fig.height=15,fig.width=15}
+netVisual_chord_gene(cellchat, signaling = c("CXCL"), legend.pos.x = 8, scale=FALSE,sources.use = c(57,63), lab.cex=0.5,color.use = colours) 
+```
+
+
+```{r fig.height=15,fig.width=15}
+netVisual_chord_gene(cellchat, signaling = c("MHC-II"), legend.pos.x = 8, scale=FALSE,sources.use = c(57), lab.cex=0.5,color.use = colours) 
+```
+
+
+### code from previous notebook
+```{r fig.height=15,fig.width=15}
+netVisual_chord_gene(cellchat, signaling = c("IL6"),legend.pos.x = 8, scale=FALSE, sources.use = c(1,2,3,4,5,6,7), targets.use = c(1,2,3,4,5,6,7), lab.cex=1,  color.use = c('#CD6600', '#FF8C00', '#CD00CD','#0000EE', '#8FBC8F','#C1FFC1','#228B22')) 
+```
+
+```{r}
+netVisual_chord_gene(cellchat, signaling = c("CCL"),legend.pos.x = 8, scale=TRUE, sources.use = c(5,6,7), targets.use = c(1,2,3,4,5,6,7), lab.cex=0.5,  color.use = c('#CD6600', '#FF8C00', '#CD00CD', '#0000EE',  '#8FBC8F','#C1FFC1','#228B22')) 
+
+```
+
+```{r}
+netVisual_chord_gene(cellchat, signaling = c("IL6"),legend.pos.x = 8, scale=TRUE, sources.use = c(5,6,7), targets.use = c(1,2,3,4), lab.cex=1.5, color.use = c('#CD6600', '#FF8C00', '#CD00CD',  '#4169E1', '#0000EE', '#ADD8E6', '#8FBC8F','#C1FFC1','#228B22','#6495ED')) 
+
+```
+
+```{r}
+netVisual_chord_gene(cellchat, signaling = c("IL6"),legend.pos.x = 8, scale=TRUE, lab.cex=1,  color.use = c('#CD6600', '#FF8C00', '#CD00CD','#0000EE', '#8FBC8F','#C1FFC1','#228B22'))
+```
+
+Below is just changes to the default circle/chord plots from the source code, the default option is to have the labels sticking out from the plot instead of wrapping around this can be changed in circos.text setting facing (https://www.rdocumentation.org/packages/circlize/versions/0.4.13/topics/circos.text)
+
+```{r fig.height=10,fig.width=10}
+#HLA-DRA
+pathways.show <- c("MHC-II")
+pairLR.MHCII <- extractEnrichedLR(cellchat, signaling = pathways.show, geneLR.return = FALSE)
+LR.show <- pairLR.MHCII[11,] #HLA-DRA is 10 and HLA-DRB1 is 11
+netVisual_individual(cellchat, signaling = pathways.show, pairLR.use = LR.show, layout = "chord", color.use = c('#CD6600', '#FF8C00', '#CD00CD',  '#4169E1', '#0000EE', '#ADD8E6', '#8FBC8F','#C1FFC1','#228B22','#6495ED'),remove.isolate=TRUE)
+```
+```{r}
+netVisual_individual <- function(object, signaling, signaling.name = NULL, pairLR.use = NULL, color.use = NULL, vertex.receiver = NULL, sources.use = NULL, targets.use = NULL, top = 1, remove.isolate = FALSE,
+                                 vertex.weight = 1, vertex.weight.max = NULL, vertex.size.max = NULL, vertex.label.cex = 0.8,
+                                 weight.scale = FALSE, edge.weight.max = NULL, edge.width.max=8, graphics.init = TRUE,
+                                 layout = c("circle","hierarchy","chord"), height = 5, thresh = 0.05, #from = NULL, to = NULL, bidirection = NULL,vertex.size = NULL,
+                                 group = NULL,cell.order = NULL,small.gap = 1, big.gap = 10, scale = FALSE, reduce = -1, show.legend = FALSE, legend.pos.x = 20, legend.pos.y = 20, nCol = NULL,
+                                 ...) {
+  layout <- match.arg(layout)
+  # if (!is.null(vertex.size)) {
+  #   warning("'vertex.size' is deprecated. Use `vertex.weight`")
+  # }
+  if (is.null(vertex.weight)) {
+    vertex.weight <- as.numeric(table(object@idents))
+  }
+  if (is.null(vertex.size.max)) {
+    if (length(unique(vertex.weight)) == 1) {
+      vertex.size.max <- 5
+    } else {
+      vertex.size.max <- 15
+    }
+  }
+
+  pairLR <- searchPair(signaling = signaling, pairLR.use = object@LR$LRsig, key = "pathway_name", matching.exact = T, pair.only = F)
+
+  if (is.null(signaling.name)) {
+    signaling.name <- signaling
+  }
+  net <- object@net
+
+  pairLR.use.name <- dimnames(net$prob)[[3]]
+  pairLR.name <- intersect(rownames(pairLR), pairLR.use.name)
+  if (!is.null(pairLR.use)) {
+    if (is.data.frame(pairLR.use)) {
+      pairLR.name <- intersect(pairLR.name, as.character(pairLR.use$interaction_name))
+    } else {
+      pairLR.name <- intersect(pairLR.name, as.character(pairLR.use))
+    }
+
+    if (length(pairLR.name) == 0) {
+      stop("There is no significant communication for the input L-R pairs!")
+    }
+  }
+
+  pairLR <- pairLR[pairLR.name, ]
+  prob <- net$prob
+  pval <- net$pval
+
+  prob[pval > thresh] <- 0
+  if (length(pairLR.name) > 1) {
+    pairLR.name.use <- pairLR.name[apply(prob[,,pairLR.name], 3, sum) != 0]
+  } else {
+    pairLR.name.use <- pairLR.name[sum(prob[,,pairLR.name]) != 0]
+  }
+
+  if (length(pairLR.name.use) == 0) {
+    stop(paste0('There is no significant communication of ', signaling.name))
+  } else {
+    pairLR <- pairLR[pairLR.name.use,]
+  }
+
+  nRow <- length(pairLR.name.use)
+
+  prob <- prob[,,pairLR.name.use]
+  pval <- pval[,,pairLR.name.use]
+
+  if (is.null(nCol)) {
+    nCol <- min(length(pairLR.name.use), 2)
+  }
+
+  if (length(dim(prob)) == 2) {
+    prob <- replicate(1, prob, simplify="array")
+    pval <- replicate(1, pval, simplify="array")
+  }
+
+ # prob <-(prob-min(prob))/(max(prob)-min(prob))
+  if (is.null(edge.weight.max)) {
+    edge.weight.max = max(prob)
+  }
+
+  if (layout == "hierarchy") {
+    if (graphics.init) {
+      par(mfrow=c(nRow,2), mar = c(5, 4, 4, 2) +0.1)
+    }
+
+    for (i in 1:length(pairLR.name.use)) {
+      signalName_i <- pairLR$interaction_name_2[i]
+      prob.i <- prob[,,i]
+      netVisual_hierarchy1(prob.i, vertex.receiver = vertex.receiver, sources.use = sources.use, targets.use = targets.use, remove.isolate = remove.isolate, top = top, color.use = color.use, vertex.weight = vertex.weight, vertex.weight.max = vertex.weight.max, vertex.size.max = vertex.size.max, weight.scale = weight.scale, edge.weight.max = edge.weight.max, edge.width.max=edge.width.max, title.name = signalName_i,...)
+      netVisual_hierarchy2(prob.i, vertex.receiver = setdiff(1:nrow(prob.i),vertex.receiver), sources.use = sources.use, targets.use = targets.use, remove.isolate = remove.isolate, top = top, color.use = color.use, vertex.weight = vertex.weight, vertex.weight.max = vertex.weight.max, vertex.size.max = vertex.size.max, weight.scale = weight.scale, edge.weight.max = edge.weight.max, edge.width.max=edge.width.max, title.name = signalName_i,...)
+    }
+    # grid.echo()
+    # gg <-  grid.grab()
+    gg <- recordPlot()
+
+  } else if (layout == "circle") {
+   # par(mfrow=c(nRow,1))
+    if (graphics.init) {
+      par(mfrow = c(ceiling(length(pairLR.name.use)/nCol), nCol), xpd=TRUE)
+    }
+
+    gg <- vector("list", length(pairLR.name.use))
+    for (i in 1:length(pairLR.name.use)) {
+      signalName_i <- pairLR$interaction_name_2[i]
+      prob.i <- prob[,,i]
+      gg[[i]] <- netVisual_circle(prob.i, sources.use = sources.use, targets.use = targets.use, remove.isolate = remove.isolate, top = top, color.use = color.use, vertex.weight = vertex.weight, vertex.weight.max = vertex.weight.max, vertex.size.max = vertex.size.max, weight.scale = weight.scale, edge.weight.max = edge.weight.max, edge.width.max=edge.width.max, title.name = signalName_i,...)
+    }
+  } else if (layout == "chord") {
+    if (graphics.init) {
+      par(mfrow = c(ceiling(length(pairLR.name.use)/nCol), nCol), xpd=TRUE)
+    }
+
+    gg <- vector("list", length(pairLR.name.use))
+    for (i in 1:length(pairLR.name.use)) {
+      title.name <- pairLR$interaction_name_2[i]
+      net <- prob[,,i]
+      gg[[i]] <- netVisual_chord_cell_internal(net, color.use = color.use, sources.use = sources.use, targets.use = targets.use, remove.isolate = remove.isolate,
+                                               group = group, cell.order = cell.order,
+                                               lab.cex = vertex.label.cex,small.gap = small.gap, big.gap = big.gap,
+                                               scale = scale, reduce = reduce,
+                                               title.name = title.name, show.legend = show.legend, legend.pos.x = legend.pos.x, legend.pos.y = legend.pos.y)
+    }
+  }
+  return(gg)
+}
+```
+
+```{r}
+netVisual_chord_cell_internal <- function(net, color.use = NULL, group = NULL, cell.order = NULL,
+                                          sources.use = NULL, targets.use = NULL,
+                                          lab.cex = 0.8,small.gap = 1, big.gap = 10, annotationTrackHeight = c(0.03),
+                                          remove.isolate = FALSE, link.visible = TRUE, scale = FALSE, directional = 1, link.target.prop = TRUE, reduce = -1,
+                                          transparency = 0.4, link.border = NA,
+                                          title.name = NULL, show.legend = FALSE, legend.pos.x = 20, legend.pos.y = 20,...){
+  if (inherits(x = net, what = c("matrix", "Matrix"))) {
+    cell.levels <- union(rownames(net), colnames(net))
+    net <- reshape2::melt(net, value.name = "prob")
+    colnames(net)[1:2] <- c("source","target")
+  } else if (is.data.frame(net)) {
+    if (all(c("source","target", "prob") %in% colnames(net)) == FALSE) {
+      stop("The input data frame must contain three columns named as source, target, prob")
+    }
+    cell.levels <- as.character(union(net$source,net$target))
+  }
+  if (!is.null(cell.order)) {
+    cell.levels <- cell.order
+  }
+  net$source <- as.character(net$source)
+  net$target <- as.character(net$target)
+
+  # keep the interactions associated with sources and targets of interest
+  if (!is.null(sources.use)){
+    if (is.numeric(sources.use)) {
+      sources.use <- cell.levels[sources.use]
+    }
+    net <- subset(net, source %in% sources.use)
+  }
+  if (!is.null(targets.use)){
+    if (is.numeric(targets.use)) {
+      targets.use <- cell.levels[targets.use]
+    }
+    net <- subset(net, target %in% targets.use)
+  }
+  # remove the interactions with zero values
+  net <- subset(net, prob > 0)
+  # create a fake data if keeping the cell types (i.e., sectors) without any interactions
+  if (!remove.isolate) {
+    cells.removed <- setdiff(cell.levels, as.character(union(net$source,net$target)))
+    if (length(cells.removed) > 0) {
+      net.fake <- data.frame(cells.removed, cells.removed, 1e-10*sample(length(cells.removed), length(cells.removed)))
+      colnames(net.fake) <- colnames(net)
+      net <- rbind(net, net.fake)
+      link.visible <- net[, 1:2]
+      link.visible$plot <- FALSE
+      link.visible$plot[1:(nrow(net) - nrow(net.fake))] <- TRUE
+      # directional <- net[, 1:2]
+      # directional$plot <- 0
+      # directional$plot[1:(nrow(net) - nrow(net.fake))] <- 1
+      # link.arr.type = "big.arrow"
+      # message("Set scale = TRUE when remove.isolate = FALSE")
+      scale = TRUE
+    }
+  }
+
+  df <- net
+  cells.use <- union(df$source,df$target)
+
+  # define grid order
+  order.sector <- cell.levels[cell.levels %in% cells.use]
+
+  # define grid color
+  if (is.null(color.use)){
+    color.use = scPalette(length(cell.levels))
+    names(color.use) <- cell.levels
+  } else if (is.null(names(color.use))) {
+    names(color.use) <- cell.levels
+  }
+  grid.col <- color.use[order.sector]
+  names(grid.col) <- order.sector
+
+  # set grouping information
+  if (!is.null(group)) {
+    group <- group[names(group) %in% order.sector]
+  }
+
+  # define edge color
+  edge.color <- color.use[as.character(df$source)]
+
+  if (directional == 0 | directional == 2) {
+    link.arr.type = "triangle"
+  } else {
+    link.arr.type = "big.arrow"
+  }
+
+  circos.clear()
+  chordDiagram(df,
+               order = order.sector,
+               col = edge.color,
+               grid.col = grid.col,
+               transparency = transparency,
+               link.border = link.border,
+               directional = directional,
+               direction.type = c("diffHeight","arrows"),
+               link.arr.type = link.arr.type, # link.border = "white",
+               annotationTrack = "grid",
+               annotationTrackHeight = annotationTrackHeight,
+               preAllocateTracks = list(track.height = max(strwidth(order.sector))),
+               small.gap = small.gap,
+               big.gap = big.gap,
+               link.visible = link.visible,
+               scale = scale,
+               group = group,
+               link.target.prop = link.target.prop,
+               reduce = reduce,
+               ...)
+  circos.track(track.index = 1, panel.fun = function(x, y) {
+    xlim = get.cell.meta.data("xlim")
+    xplot = get.cell.meta.data("xplot")
+    ylim = get.cell.meta.data("ylim")
+    sector.name = get.cell.meta.data("sector.index")
+    circos.text(mean(xlim), ylim[1], sector.name, facing = "bending", niceFacing = TRUE, adj = c(0, 0.5),cex = lab.cex)
+  }, bg.border = NA)
+
+  # https://jokergoo.github.io/circlize_book/book/legends.html
+  if (show.legend) {
+    lgd <- ComplexHeatmap::Legend(at = names(grid.col), type = "grid", legend_gp = grid::gpar(fill = grid.col), title = "Cell State")
+    ComplexHeatmap::draw(lgd, x = unit(1, "npc")-unit(legend.pos.x, "mm"), y = unit(legend.pos.y, "mm"), just = c("right", "bottom"))
+  }
+
+  if(!is.null(title.name)){
+    # title(title.name, cex = 1)
+    text(-0, 1.02, title.name, cex=1)
+  }
+  circos.clear()
+  gg <- recordPlot()
+  return(gg)
+}
+
+```
+
+
+
+
+
+
+
+```{r}
+netVisual_chord_gene <- function(object, slot.name = "net", color.use = NULL,
+                                 signaling = NULL, pairLR.use = NULL, net = NULL,
+                                 sources.use = NULL, targets.use = NULL,
+                                 lab.cex = 0.8,small.gap = 1, big.gap = 10, annotationTrackHeight = c(0.03),
+                                 link.visible = TRUE, scale = FALSE, directional = 1, link.target.prop = TRUE, reduce = -1,
+                                 transparency = 0.4, link.border = NA,
+                                 title.name = NULL, legend.pos.x = 20, legend.pos.y = 20, show.legend = TRUE,
+                                 thresh = 0.05,
+                                 ...){
+  if (!is.null(pairLR.use)) {
+    if (!is.data.frame(pairLR.use)) {
+      stop("pairLR.use should be a data frame with a signle column named either 'interaction_name' or 'pathway_name' ")
+    } else if ("pathway_name" %in% colnames(pairLR.use)) {
+      message("slot.name is set to be 'netP' when pairLR.use contains signaling pathways")
+      slot.name = "netP"
+    }
+  }
+
+  if (!is.null(pairLR.use) & !is.null(signaling)) {
+    stop("Please do not assign values to 'signaling' when using 'pairLR.use'")
+  }
+
+  if (is.null(net)) {
+    prob <- slot(object, "net")$prob
+    pval <- slot(object, "net")$pval
+    prob[pval > thresh] <- 0
+    net <- reshape2::melt(prob, value.name = "prob")
+    colnames(net)[1:3] <- c("source","target","interaction_name")
+
+    pairLR = dplyr::select(object@LR$LRsig, c("interaction_name_2", "pathway_name",  "ligand",  "receptor" ,"annotation","evidence"))
+    idx <- match(net$interaction_name, rownames(pairLR))
+    temp <- pairLR[idx,]
+    net <- cbind(net, temp)
+  }
+
+  if (!is.null(signaling)) {
+    pairLR.use <- data.frame()
+    for (i in 1:length(signaling)) {
+      pairLR.use.i <- searchPair(signaling = signaling[i], pairLR.use = object@LR$LRsig, key = "pathway_name", matching.exact = T, pair.only = T)
+      pairLR.use <- rbind(pairLR.use, pairLR.use.i)
+    }
+  }
+
+  if (!is.null(pairLR.use)){
+    if ("interaction_name" %in% colnames(pairLR.use)) {
+      net <- subset(net,interaction_name %in% pairLR.use$interaction_name)
+    } else if ("pathway_name" %in% colnames(pairLR.use)) {
+      net <- subset(net, pathway_name %in% as.character(pairLR.use$pathway_name))
+    }
+  }
+
+  if (slot.name == "netP") {
+    net <- dplyr::select(net, c("source","target","pathway_name","prob"))
+    net$source_target <- paste(net$source, net$target, sep = "sourceTotarget")
+    net <- net %>% dplyr::group_by(source_target, pathway_name) %>% dplyr::summarize(prob = sum(prob))
+    a <- stringr::str_split(net$source_target, "sourceTotarget", simplify = T)
+    net$source <- as.character(a[, 1])
+    net$target <- as.character(a[, 2])
+    net$ligand <- net$pathway_name
+    net$receptor <- " "
+  }
+
+  # keep the interactions associated with sources and targets of interest
+  if (!is.null(sources.use)){
+    if (is.numeric(sources.use)) {
+      sources.use <- levels(object@idents)[sources.use]
+    }
+    net <- subset(net, source %in% sources.use)
+  } else {
+    sources.use <- levels(object@idents)
+  }
+  if (!is.null(targets.use)){
+    if (is.numeric(targets.use)) {
+      targets.use <- levels(object@idents)[targets.use]
+    }
+    net <- subset(net, target %in% targets.use)
+  } else {
+    targets.use <- levels(object@idents)
+  }
+  # remove the interactions with zero values
+  df <- subset(net, prob > 0)
+
+  if (nrow(df) == 0) {
+    stop("No signaling links are inferred! ")
+  }
+
+  if (length(unique(net$ligand)) == 1) {
+    message("You may try the function `netVisual_chord_cell` for visualizing individual signaling pathway")
+  }
+
+  df$id <- 1:nrow(df)
+  # deal with duplicated sector names
+  ligand.uni <- unique(df$ligand)
+  for (i in 1:length(ligand.uni)) {
+    df.i <- df[df$ligand == ligand.uni[i], ]
+    source.uni <- unique(df.i$source)
+    for (j in 1:length(source.uni)) {
+      df.i.j <- df.i[df.i$source == source.uni[j], ]
+      df.i.j$ligand <- paste0(df.i.j$ligand, paste(rep(' ',j-1),collapse = ''))
+      df$ligand[df$id %in% df.i.j$id] <- df.i.j$ligand
+    }
+  }
+  receptor.uni <- unique(df$receptor)
+  for (i in 1:length(receptor.uni)) {
+    df.i <- df[df$receptor == receptor.uni[i], ]
+    target.uni <- unique(df.i$target)
+    for (j in 1:length(target.uni)) {
+      df.i.j <- df.i[df.i$target == target.uni[j], ]
+      df.i.j$receptor <- paste0(df.i.j$receptor, paste(rep(' ',j-1),collapse = ''))
+      df$receptor[df$id %in% df.i.j$id] <- df.i.j$receptor
+    }
+  }
+
+  cell.order.sources <- levels(object@idents)[levels(object@idents) %in% sources.use]
+  cell.order.targets <- levels(object@idents)[levels(object@idents) %in% targets.use]
+
+  df$source <- factor(df$source, levels = cell.order.sources)
+  df$target <- factor(df$target, levels = cell.order.targets)
+  # df.ordered.source <- df[with(df, order(source, target, -prob)), ]
+  # df.ordered.target <- df[with(df, order(target, source, -prob)), ]
+  df.ordered.source <- df[with(df, order(source, -prob)), ]
+  df.ordered.target <- df[with(df, order(target, -prob)), ]
+
+  order.source <- unique(df.ordered.source[ ,c('ligand','source')])
+  order.target <- unique(df.ordered.target[ ,c('receptor','target')])
+
+  # define sector order
+  order.sector <- c(order.source$ligand, order.target$receptor)
+
+  # define cell type color
+  if (is.null(color.use)){
+    color.use = scPalette(nlevels(object@idents))
+    names(color.use) <- levels(object@idents)
+    color.use <- color.use[levels(object@idents) %in% as.character(union(df$source,df$target))]
+  } else if (is.null(names(color.use))) {
+    names(color.use) <- levels(object@idents)
+    color.use <- color.use[levels(object@idents) %in% as.character(union(df$source,df$target))]
+  }
+
+  # define edge color
+  edge.color <- color.use[as.character(df.ordered.source$source)]
+  names(edge.color) <- as.character(df.ordered.source$source)
+
+  # define grid colors
+  grid.col.ligand <- color.use[as.character(order.source$source)]
+  names(grid.col.ligand) <- as.character(order.source$source)
+  grid.col.receptor <- color.use[as.character(order.target$target)]
+  names(grid.col.receptor) <- as.character(order.target$target)
+  grid.col <- c(as.character(grid.col.ligand), as.character(grid.col.receptor))
+  names(grid.col) <- order.sector
+
+  df.plot <- df.ordered.source[ ,c('ligand','receptor','prob')]
+
+  if (directional == 2) {
+    link.arr.type = "triangle"
+  } else {
+    link.arr.type = "big.arrow"
+  }
+  circos.clear()
+  chordDiagram(df.plot,
+               order = order.sector,
+               col = edge.color,
+               grid.col = grid.col,
+               transparency = transparency,
+               link.border = link.border,
+               directional = directional,
+               direction.type = c("diffHeight","arrows"),
+               link.arr.type = link.arr.type,
+               annotationTrack = "grid",
+               annotationTrackHeight = annotationTrackHeight,
+               preAllocateTracks = list(track.height = max(strwidth(order.sector))),
+               small.gap = small.gap,
+               big.gap = big.gap,
+               link.visible = link.visible,
+               scale = scale,
+               link.target.prop = link.target.prop,
+               reduce = reduce,
+               ...)
+
+  circos.track(track.index = 1, panel.fun = function(x, y) {
+    xlim = get.cell.meta.data("xlim")
+    xplot = get.cell.meta.data("xplot")
+    ylim = get.cell.meta.data("ylim")
+    sector.name = get.cell.meta.data("sector.index")
+    circos.text(mean(xlim), ylim[1], sector.name, facing = "bending", niceFacing = TRUE, adj=c(0.5,0.01),cex = lab.cex)
+  }, bg.border = NA)
+
+
+  # https://jokergoo.github.io/circlize_book/book/legends.html
+  if (show.legend) {
+    lgd <- ComplexHeatmap::Legend(at = names(color.use), type = "grid", legend_gp = grid::gpar(fill = color.use), title = "Cell State")
+    ComplexHeatmap::draw(lgd, x = unit(1, "npc")-unit(legend.pos.x, "mm"), y = unit(legend.pos.y, "mm"), just = c("right", "bottom"))
+  }
+
+  circos.clear()
+  if(!is.null(title.name)){
+    text(-0, 1.02, title.name, cex=1)
+  }
+  gg <- recordPlot()
+  return(gg)
+}
+```
+
+
+```{r}
+netVisual_chord_gene(cellchat, signaling = c("CCL"), 
+                     #sources.use = c(1,2,3,5,6,7,8), targets.use = c(1,2,3,5,6,7,8), 
+legend.pos.x = 8,scale=TRUE, color.use = c('#CD6600', '#FF8C00', '#CD00CD', #'#388E8E', 
+'#80007c', '#8FBC8F', '#C1FFC1', '#228B22'),lab.cex = 0.8) 
+```
+
+
+```{r}
+a <- netVisual_chord_gene(cellchat, signaling = c("CCL"), 
+                     #sources.use = c(1,2,3,5,6,7,8), targets.use = c(1,2,3,5,6,7,8), 
+legend.pos.x = 8,scale=TRUE, color.use = c('#CD6600', '#FF8C00', '#CD00CD', #'#388E8E', 
+'#BF8FAF', '#8FBC8F', '#C1FFC1', '#228B22'),lab.cex = 1) 
+```
+
+
+
+```{r}
+jpeg("final_figures/CXCL_chord.jpeg",width=30,height=30,units="cm",quality=100,res=300)
+netVisual_chord_gene(cellchat, signaling = c("CXCL"), 
+                     #sources.use = c(1,2,3,5,6,7,8), targets.use = c(1,2,3,5,6,7,8), 
+legend.pos.x = 8,scale=TRUE, color.use = c('#CD6600', '#FF8C00', '#CD00CD', #'#388E8E', 
+'#BC8F8F', '#8FBC8F', '#C1FFC1', '#228B22'),lab.cex = 3) 
+dev.off()
+```
+
+

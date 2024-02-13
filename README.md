@@ -3,7 +3,7 @@ Integration of single cell datasets across the gastrointestinal tract.
 
 <p align="center">
 
-<img src="https://user-images.githubusercontent.com/77395759/226679884-3d5616db-13bc-49a2-9e73-ccd25d0c91db.png" width=50% height=50%>
+<img src="[https://user-images.githubusercontent.com/77395759/226679884-3d5616db-13bc-49a2-9e73-ccd25d0c91db.png](https://github.com/Teichlab/PanGIAtlas/blob/main/WebPortal_image-01.png)" width=50% height=50%>
 
 </p>
 
@@ -43,23 +43,8 @@ Extended atlas (original count matrices used):
 
 ## Contents
 
-- `metadata`: this folder contains metadata used for analysis (small data objects)
-- `src`: this folder contains notebooks and scripts
-- `thrash`: old code snippets no longer in use, kept for OCD
+- `notebooks`: this folder contains all notebooks
+- `scripts`: this folder contains scripts
 
-## Set-up conda environment
-
-1. Create a new conda environment
-
-```
-conda create --name megagut python=3.9
-conda activate megagut
-```
-
-2. Install R and R dependencies in the environment
-
-```
-conda install conda-forge::r-base==4.0.5 bioconda::bioconductor-edger==3.32.1 rpy2==3.4.2 conda-forge::r-statmod==1.4.37
-```
 
 

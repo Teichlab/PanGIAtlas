@@ -3,7 +3,7 @@ Integration of single cell datasets across the gastrointestinal tract.
 
 <p align="center">
 
-<img src="[https://user-images.githubusercontent.com/77395759/226679884-3d5616db-13bc-49a2-9e73-ccd25d0c91db.png](https://github.com/Teichlab/PanGIAtlas/blob/main/WebPortal_image-01.png)" width=50% height=50%>
+![WebPortal_image-01](https://github.com/Teichlab/PanGIAtlas/assets/77395759/7f2d683f-572e-475a-82e6-b21f465a0d9d)
 
 </p>
 

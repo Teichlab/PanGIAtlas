@@ -1,0 +1,1717 @@
+---
+title: "Megagut trajectory analysis using monocle3"
+output: html_document
+---
+
+```{r}
+# Load required libraries
+library(tidyverse)
+library(SingleCellExperiment)
+library(monocle3)
+source("pangiTheme.R")
+```
+
+```{r}
+# Load data set
+dataset_name = "megagut"
+sce <- readRDS("megagut_epithelial.rds")
+
+sce_colData = SingleCellExperiment::colData(sce) %>%
+  data.frame()
+
+sce_colData %>%
+  dplyr::filter(level_3_annot == "Mucous_gland_neck") %>%
+  rstatix::freq_table(sourceID, study, organ_unified, disease)
+# A tibble: 11 × 6
+#    sourceID     study           organ_unified disease                    n  prop
+#    <fct>        <fct>           <fct>         <fct>                  <int> <dbl>
+#  1 3p_sanger    Elmentaite2021  ileum         pediatric_IBD              8 100  
+#  2 5p_sanger    Elmentaite2021  duodenum      control                   61 100  
+#  3 5p_sanger    Elmentaite2021  ileum         control                    1 100  
+#  4 5p_sanger    Elmentaite2021  jejunum       control                    2 100  
+#  5 E-MTAB-10187 Yu2021          duodenum      control                    8 100  
+#  6 GSE134809    Martin2019      ileum         crohns_disease            63 100  
+#  7 SCP1884      Kong2023        ileum         crohns_disease            96  75  
+#  8 SCP1884      Kong2023        ileum         neighbouring_inflammed    32  25  
+#  9 nan          Fitzpatrick2023 duodenum      celiac_active             24  88.9
+# 10 nan          Fitzpatrick2023 duodenum      celiac_treated             1   3.7
+# 11 nan          Fitzpatrick2023 duodenum      control                    2   7.4
+
+```
+
+# Analysis of disease data (CD, ileum)
+
+```{r}
+dataset_name = "megagut_cdIleum"
+
+# Filter sce
+barcodes = sce_colData %>%
+  dplyr::filter(organ_unified == 'ileum',
+                study %in% c("Elmentaite2021","Martin2019","Kong2023"),
+                disease %in% c("pediatric_IBD", 'crohns_disease')) %>%
+  {rownames(.)}
+
+sce <- sce[, barcodes]
+
+
+# Create monocle cell data set
+cds <- new_cell_data_set(counts(sce),
+                         cell_metadata = colData(sce),
+                         gene_metadata = rowData(sce) %>%
+                           data.frame() %>%
+                           tibble::add_column(gene_short_name = rownames(sce)))
+
+# Add precomputed UMAP (from scANVI manifold) as reducedDim to skip pre-processing
+reducedDim(cds, "UMAP") = reducedDim(sce, "UMAP")
+reducedDim(cds, "PCA") <- reducedDim(sce, "X_scANVI")
+counts(cds) <- counts(sce) %>% `colnames<-`(colnames(cds))
+assay(cds, "lognorm") <- assay(sce, "lognorm") %>% `colnames<-`(colnames(cds))
+
+# Set seed
+set.seed(444)
+
+# Inspect UMAP
+p <- plot_cells(cds, color_cells_by = "organ_unified", alpha = 0.5)
+p
+ggsave(paste0(dataset_name, "_allEpithelial_organ_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 170, width = 250, units = "mm", dpi = 300)
+
+p <- plot_cells(cds, color_cells_by = "level_3_annot", alpha = 0.5)
+p
+ggsave(paste0(dataset_name, "_allEpithelial_cellType_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 170, width = 250, units = "mm", dpi = 300)
+
+p <- plot_cells(cds, color_cells_by = "study", alpha = 0.5)
+p
+ggsave(paste0(dataset_name, "_allEpithelial_study_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 170, width = 250, units = "mm", dpi = 300)
+
+## Setp 3: Cluster cells
+cds <- cluster_cells(cds, cluster_method = "louvain", k = 15)
+
+p <- plot_cells(cds, color_cells_by = "cluster", show_trajectory_graph = F)
+p
+ggsave(paste0(dataset_name, "_allEpithelial_monocle3Clusters_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 170, width = 250, units = "mm", dpi = 300)
+
+# Inspect which clusters have which cells (to select start and end points of trajectory)
+cds_clusterComp <- colData(cds) %>%
+  data.frame() %>%
+  tibble::add_column(cluster_id = unname(cds@clusters$UMAP$clusters)) %>%
+  rstatix::freq_table(cluster_id, level_3_annot)
+
+## Step 4: Learn graph
+cds <- learn_graph(cds, learn_graph_control = list(nn.cores = 7, nn.k = 15))
+
+# Choose root nodes and infer pseudotime
+cds <- order_cells(cds, root_pr_nodes = stem_nodes)
+saveRDS(cds, here::here('data', 'megagut', paste0(dataset_name, '_monocle3Cds.rds')))
+#cds <- readRDS(here::here('data', 'megagut',paste0(dataset_name, '_monocle3Cds.rds')))
+
+# Plot cells along pseudotime
+p <- plot_cells(cds,
+           color_cells_by = "pseudotime",
+           trajectory_graph_color = 'grey80',
+           label_cell_groups=F, 
+           label_leaves=F,
+           label_branch_points=FALSE, 
+           label_roots = F,
+           graph_label_size=1.5, 
+           cell_size = 0.7)
+p
+ggsave(paste0(dataset_name, "_monocle3Pseudotime_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 250, width = 250, units = "mm", dpi = 300)
+```
+
+## Inflare cells
+
+```{r}
+traj_name = "inflareTraj"
+
+# Inspect which clusters have starting and end point cells
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Mucous_gland_neck")
+# A tibble: 5 × 4
+#   cluster_id level_3_annot         n  prop
+#   <fct>      <fct>             <int> <dbl>
+# 1 8          Mucous_gland_neck     2   0.3
+# 2 12         Mucous_gland_neck     1   0.2
+# 3 14         Mucous_gland_neck     1   0.1
+# 4 30         Mucous_gland_neck     1   0.2
+# 5 47         Mucous_gland_neck   162  83.9
+
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Epithelial_stem") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# A tibble: 10 × 4
+#    cluster_id level_3_annot       n  prop
+#    <fct>      <fct>           <int> <dbl>
+#  1 11         Epithelial_stem   456  79.7
+#  2 30         Epithelial_stem   266  44.6
+#  3 23         Epithelial_stem    17   2.5
+#  4 28         Epithelial_stem    10   1.8
+#  5 4          Epithelial_stem     4   0.6
+#  6 6          Epithelial_stem     3   0.5
+#  7 3          Epithelial_stem     2   0.2
+#  8 20         Epithelial_stem     1   0.2
+#  9 22         Epithelial_stem     1   0.2
+# 10 43         Epithelial_stem     1   1.3
+
+# Extract trajectory leading to INFLARE cells
+branch_end_nodes = extract_closest_nodes(cds, cell_type_oi = 'Mucous_gland_neck', min_n_cells = 10)
+branch_root_nodes = extract_closest_nodes(cds, cell_type_oi = 'Epithelial_stem')
+
+# Extract graph segment
+branch_cds <- extract_cell_trajectory(cds,
+                                       root_node = branch_end_nodes,
+                                       end_nodes = branch_root_nodes)
+
+n_cells_pseudotime <- branch_cds %>% colData() %>% data.frame() %>% rstatix::freq_table(level_3_annot)
+# A tibble: 12 × 3
+#    level_3_annot                   n  prop
+#    <fct>                       <int> <dbl>
+#  1 BEST4_enterocyte_colonocyte     1   0.1
+#  2 Enterocyte                      5   0.5
+#  3 Enteroendocrine                12   1.1
+#  4 Epithelial_stem               640  58.3
+#  5 Goblet                          1   0.1
+#  6 Goblet_progenitor               1   0.1
+#  7 Microfold                       1   0.1
+#  8 Mucous_gland_neck             163  14.8
+#  9 Paneth                          1   0.1
+# 10 Surface_foveolar               15   1.4
+# 11 TA                            257  23.4
+# 12 Tuft                            1   0.1
+
+# n_cells_pseudotime <- colData(branch_cds) %>%
+#   data.frame() %>%
+#   tibble::add_column(pseudotime = pseudotime(branch_cds)) %>%
+#   dplyr::mutate(pseudotime_binned = dplyr::ntile(pseudotime, n = round(max(pseudotime(branch_cds)), digits = 1)/0.1),
+#                 pseudotime_binned_mean = (pseudotime_binned-1)*0.1+0.05) %>%
+#   rstatix::freq_table(pseudotime_binned_mean, level_3_annot) %>%
+#   dplyr::group_by(level_3_annot) %>%
+#   dplyr::filter(max(prop) >= 20)
+
+# Remove cells of low abundance (most likely mislabelled)
+branch_cds <- branch_cds[, which(branch_cds$level_3_annot %in% n_cells_pseudotime$level_3_annot[n_cells_pseudotime$prop >= 2])]
+
+color_scheme = c('PGC'='#850000',
+          'MUC6'='#ED1C24',
+          'AQP5'='#EA906C',
+          'LGR5'='#0000CD',
+          'OLFM4'='#78CFFF',
+          'MKI67'='#0A9B75',
+          #'KLF5'='#6CC4BC',
+          'SOX9'='#6CC4BC')
+          #'LEFTY1'='#0381F4')
+
+expr_mat <- colData(branch_cds) %>%
+  data.frame() %>%
+  tibble::add_column(pseudotime = pseudotime(branch_cds)) %>%
+  dplyr::bind_cols(assay(branch_cds[names(color_scheme),], "lognorm") %>% t() %>% as.matrix() %>% as.data.frame()) %>%
+  dplyr::mutate(pseudotime_binned = dplyr::ntile(pseudotime, n = round(max(pseudotime(branch_cds)))/0.1),
+                pseudotime_binned_mean = (pseudotime_binned-1)*0.1+0.05) %>%
+  tidyr::pivot_longer(names(color_scheme), names_to = "gene_name", values_to = "expr") 
+
+
+# Extract order of cells in trajectory
+cell_type_order = expr_mat %>%
+  rstatix::freq_table(pseudotime_binned_mean, level_3_annot) %>%
+  dplyr::group_by(level_3_annot) %>%
+  dplyr::filter(max(n) == n) %>%
+  dplyr::arrange(pseudotime_binned_mean) %>%
+  dplyr::pull(level_3_annot) %>%
+  unique()
+
+expr_mat %>%
+  dplyr::left_join(color_scheme %>% 
+                     enframe(name = 'gene_name', value = "gene_color") %>%
+                     dplyr::mutate(gene_color = factor(gene_color, levels = unname(color_scheme))),
+                   by = 'gene_name') %>% 
+  # Facet by max
+  dplyr::group_by(gene_name) %>%
+  dplyr::mutate(facet_nr = ifelse(max(expr) > 5, "first", "second")) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = expr, color = gene_color, fill = gene_color)) +
+  #geom_point(alpha = 0.5) +
+  geom_smooth(method = "gam", formula = y ~ splines::ns(x, df=10)) +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_continuous( n.breaks = 5) +
+  scale_color_manual(values = unname(color_scheme), labels = names(color_scheme)) +
+  scale_fill_manual(values = unname(color_scheme), labels = names(color_scheme)) +
+  labs(x = "Pseudotime", y = "Log-norm epxression", color = "Gene name", fill = "Gene name") +
+  facet_wrap(~ facet_nr, ncol = 1, scales = "free_y") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank(), strip.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))  +
+# Violin plot showing distribution of cell types along pseudotime
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50") +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 20)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25)) +
+  plot_layout(ncol = 1, heights = c(3,1))
+ggsave(paste(dataset_name, traj_name,"monocle3_markersAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 250, width = 250, units = "mm", dpi = 300)
+
+# Determine genes which are differentially expressed along the trahjectory
+branch_cds.degs <- graph_test(branch_cds, neighbor_graph="principal_graph", cores=5)
+
+branch_cds.degs %>%
+  dplyr::filter(!is.na(p_value)) %>%
+  dplyr::arrange(desc(morans_I)) %>%
+  tibble::rownames_to_column(var = 'gene_name') %>%
+  readr::write_csv(path = here::here("data", "megagut", paste(dataset_name, traj_name,"degsAlongTrajectory.csv", sep = "_")))
+
+# Save INFLARE cds
+saveRDS(branch_cds, here::here("data", "megagut", paste(dataset_name, traj_name, 'monocle3Traj.rds', sep = "_")))
+branch_cds <- readRDS(here::here("data", "megagut", paste(dataset_name, traj_name, 'monocle3Traj.rds', sep = "_")))
+```
+
+## Surface foveolar cells 
+
+```{r}
+traj_name = "surfaceFoveolarTraj"
+
+# Inspect which clusters have starting and end point cells
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Surface_foveolar")
+# A tibble: 6 × 4
+#   cluster_id level_3_annot        n  prop
+#   <fct>      <fct>            <int> <dbl>
+# 1 6          Surface_foveolar     1   0.2
+# 2 30         Surface_foveolar     1   0.2
+# 3 33         Surface_foveolar   143  16.6
+# 4 37         Surface_foveolar     1   0.1
+# 5 40         Surface_foveolar    11   2.4
+# 6 47         Surface_foveolar    14   7.3
+
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Epithelial_stem") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# A tibble: 10 × 4
+#    cluster_id level_3_annot       n  prop
+#    <fct>      <fct>           <int> <dbl>
+#  1 11         Epithelial_stem   456  79.7
+#  2 30         Epithelial_stem   266  44.6
+#  3 23         Epithelial_stem    17   2.5
+#  4 28         Epithelial_stem    10   1.8
+#  5 4          Epithelial_stem     4   0.6
+#  6 6          Epithelial_stem     3   0.5
+#  7 3          Epithelial_stem     2   0.2
+#  8 20         Epithelial_stem     1   0.2
+#  9 22         Epithelial_stem     1   0.2
+# 10 43         Epithelial_stem     1   1.3
+
+# Extract trajectory leading to INFLARE cells
+branch_end_nodes = extract_closest_nodes(cds, cell_type_oi = 'Surface_foveolar', min_n_cells = 15)
+branch_root_nodes = extract_closest_nodes(cds, cell_type_oi = 'Epithelial_stem')
+
+# Extract graph segment
+branch_cds <- extract_cell_trajectory(cds,
+                                       root_node = branch_end_nodes,
+                                       end_nodes = branch_root_nodes)
+
+n_cells_pseudotime <- branch_cds %>% colData() %>% data.frame() %>% rstatix::freq_table(level_3_annot)
+n_cells_pseudotime
+# A tibble: 10 × 3
+#    level_3_annot                   n  prop
+#    <fct>                       <int> <dbl>
+#  1 BEST4_enterocyte_colonocyte     4   0.2
+#  2 Enterocyte                     90   4.1
+#  3 Enteroendocrine                 5   0.2
+#  4 Epithelial_stem               541  24.5
+#  5 Goblet                          2   0.1
+#  6 Goblet_cycling                  6   0.3
+#  7 Goblet_progenitor               1   0  
+#  8 Paneth                          1   0  
+#  9 Surface_foveolar               73   3.3
+# 10 TA                           1487  67.3
+
+# Remove cells of low abundance (most likely mislabelled)
+branch_cds <- branch_cds[, which(branch_cds$level_3_annot %in% n_cells_pseudotime$level_3_annot[n_cells_pseudotime$prop >= 2])]
+
+branch_cds <- branch_cds[, which(branch_cds$level_3_annot != "Enterocyte")]
+
+color_scheme = c('CEACAM7'='#850000',
+          'MUC5AC'='#ED1C24',
+          'GKN2'='#EA906C',
+          'SLC26A3' = '#FF5B29',
+          'LGR5'='#0000CD',
+          'OLFM4'='#78CFFF',
+          #'KLF5'='#6CC4BC',
+          'MKI67'='#0A9B75'
+          )
+
+# A tibble: 8 × 14
+#   gene_name variable     n   min   max median    q1    q3   iqr   mad  mean    sd    se    ci
+#   <chr>     <fct>    <dbl> <dbl> <dbl>  <dbl> <dbl> <dbl> <dbl> <dbl> <dbl> <dbl> <dbl> <dbl>
+# 1 CEACAM7   expr      2101     0  4.10   0     0     0     0     0    0.114 0.523 0.011 0.022
+# 2 GKN2      expr      2101     0  0      0     0     0     0     0    0     0     0     0    
+# 3 KLF5      expr      2101     0  3.94   0     0     1.55  1.55  0    0.751 0.952 0.021 0.041
+# 4 LGR5      expr      2101     0  2.94   0     0     0     0     0    0.116 0.404 0.009 0.017
+# 5 MKI67     expr      2101     0  3.51   0     0     0     0     0    0.036 0.264 0.006 0.011
+# 6 MUC5AC    expr      2101     0  2.26   0     0     0     0     0    0.006 0.101 0.002 0.004
+# 7 OLFM4     expr      2101     0  6.14   3.65  2.31  4.48  2.16  1.42 3.15  1.72  0.038 0.074
+# 8 SLC26A3   expr      2101     0  3.84   0     0     0     0     0    0.114 0.503 0.011 0.022
+
+expr_mat <- colData(branch_cds) %>%
+  data.frame() %>%
+  tibble::add_column(pseudotime = pseudotime(branch_cds)) %>%
+  dplyr::bind_cols(assay(branch_cds[names(color_scheme),], "lognorm") %>% t() %>% as.matrix() %>% as.data.frame()) %>%
+  dplyr::mutate(pseudotime_binned = dplyr::ntile(pseudotime, n = round(max(pseudotime(branch_cds)))/0.1),
+                pseudotime_binned_mean = (pseudotime_binned-1)*0.1+0.05) %>%
+  tidyr::pivot_longer(names(color_scheme), names_to = "gene_name", values_to = "expr") 
+
+
+# Extract order of cells in trajectory
+cell_type_order = expr_mat %>%
+  rstatix::freq_table(pseudotime_binned_mean, level_3_annot) %>%
+  dplyr::group_by(level_3_annot) %>%
+  dplyr::filter(max(n) == n) %>%
+  dplyr::arrange(pseudotime_binned_mean) %>%
+  dplyr::pull(level_3_annot) %>%
+  unique()
+
+expr_mat %>%
+  dplyr::left_join(color_scheme %>% 
+                     enframe(name = 'gene_name', value = "gene_color") %>%
+                     dplyr::mutate(gene_color = factor(gene_color, levels = unname(color_scheme))),
+                   by = 'gene_name') %>% 
+  # Facet by max
+  dplyr::group_by(gene_name) %>%
+  dplyr::mutate(facet_nr = ifelse(max(expr) > 4, "first", "second")) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = expr, color = gene_color, fill = gene_color)) +
+  #geom_point(alpha = 0.5) +
+  geom_smooth(method = "gam", formula = y ~ splines::ns(x, df=10)) +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_continuous( n.breaks = 5) +
+  scale_color_manual(values = unname(color_scheme), labels = names(color_scheme), drop = F) +
+  scale_fill_manual(values = unname(color_scheme), labels = names(color_scheme), drop = F) +
+  labs(x = "Pseudotime", y = "Log-norm epxression", color = "Gene name", fill = "Gene name") +
+  facet_wrap(~ facet_nr, ncol = 1, scales = "free_y") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank(), strip.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))  +
+# Violin plot showing distribution of cell types along pseudotime
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50") +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 20)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25)) +
+  plot_layout(ncol = 1, heights = c(3,1))
+ggsave(paste(dataset_name, traj_name,"monocle3_markersAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 250, width = 250, units = "mm", dpi = 300)
+
+# Determine genes which are differentially expressed along the trahjectory
+branch_cds.degs <- graph_test(branch_cds, neighbor_graph="principal_graph", cores=5)
+
+branch_cds.degs %>%
+  dplyr::filter(!is.na(p_value)) %>%
+  dplyr::arrange(desc(morans_I)) %>%
+  tibble::rownames_to_column(var = 'gene_name') %>%
+  readr::write_csv(path = here::here("data", "megagut", paste(dataset_name, traj_name,"degsAlongTrajectory.csv", sep = "_")))
+
+# Save INFLARE cds
+saveRDS(branch_cds, here::here("data", "megagut", paste(dataset_name, traj_name, 'monocle3Traj.rds', sep = "_")))
+```
+
+# Healthy ileum 
+
+```{r}
+dataset_name = "megagut_ctrlIleum"
+
+sce_colData %>%
+  dplyr::filter(organ_unified == 'ileum', disease == "control") %>%
+  rstatix::freq_table(study)
+# A tibble: 4 × 3
+#   study                n  prop
+#   <fct>            <int> <dbl>
+# 1 CBTM_unpublished  5148  10.1
+# 2 Dominguez2022     4829   9.5
+# 3 Elmentaite2021    9647  19  
+# 4 Kong2023         31142  61.3
+
+# Filter sce
+barcodes = sce_colData %>%
+  dplyr::filter(organ_unified == 'ileum', disease == "control") %>%
+  {rownames(.)}
+
+sce <- sce[, barcodes]
+
+
+# Create monocle cell data set
+cds <- new_cell_data_set(counts(sce),
+                         cell_metadata = colData(sce),
+                         gene_metadata = rowData(sce) %>%
+                           data.frame() %>%
+                           tibble::add_column(gene_short_name = rownames(sce)))
+
+# Add precomputed UMAP (from scANVI manifold) as reducedDim to skip pre-processing
+reducedDim(cds, "UMAP") = reducedDim(sce, "UMAP")
+reducedDim(cds, "PCA") <- reducedDim(sce, "X_scANVI")
+counts(cds) <- counts(sce) %>% `colnames<-`(colnames(cds))
+assay(cds, "lognorm") <- assay(sce, "lognorm") %>% `colnames<-`(colnames(cds))
+
+# Set seed
+set.seed(444)
+
+# Inspect UMAP
+p <- plot_cells(cds, color_cells_by = "organ_unified", alpha = 0.5)
+p
+ggsave(paste0(dataset_name, "_allEpithelial_organ_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 170, width = 250, units = "mm", dpi = 300)
+
+p <- plot_cells(cds, color_cells_by = "level_3_annot", alpha = 0.5)
+p
+ggsave(paste0(dataset_name, "_allEpithelial_cellType_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 170, width = 250, units = "mm", dpi = 300)
+
+p <- plot_cells(cds, color_cells_by = "study", alpha = 0.5)
+p
+ggsave(paste0(dataset_name, "_allEpithelial_study_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 170, width = 250, units = "mm", dpi = 300)
+
+## Setp 3: Cluster cells
+cds <- cluster_cells(cds, cluster_method = "louvain", k = 15)
+
+p <- plot_cells(cds, color_cells_by = "cluster", show_trajectory_graph = F)
+p
+ggsave(paste0(dataset_name, "_allEpithelial_monocle3Clusters_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 170, width = 250, units = "mm", dpi = 300)
+
+# Inspect which clusters have which cells (to select start and end points of trajectory)
+cds_clusterComp <- colData(cds) %>%
+  data.frame() %>%
+  tibble::add_column(cluster_id = unname(cds@clusters$UMAP$clusters)) %>%
+  rstatix::freq_table(cluster_id, level_3_annot)
+
+## Step 4: Learn graph
+cds <- learn_graph(cds, learn_graph_control = list(nn.cores = 7, nn.k = 15))
+
+# Choose root nodes and infer pseudotime
+stem_nodes = extract_closest_nodes(cds, cell_type_oi = 'Epithelial_stem', min_n_cells = 100)
+cds <- order_cells(cds, root_pr_nodes = stem_nodes)
+saveRDS(cds, here::here('data', 'megagut', paste0(dataset_name, '_monocle3Cds.rds')))
+#cds <- readRDS(here::here('data', 'megagut',paste0(dataset_name, '_monocle3Cds.rds')))
+
+# Plot cells along pseudotime
+p <- plot_cells(cds,
+           color_cells_by = "pseudotime",
+           trajectory_graph_color = 'grey80',
+           label_cell_groups=F, 
+           label_leaves=F,
+           label_branch_points=FALSE, 
+           label_roots = F,
+           graph_label_size=1.5)
+p
+ggsave(paste0(dataset_name, "_monocle3Pseudotime_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 250, width = 250, units = "mm", dpi = 300)
+``` 
+
+## Enterocytes
+
+```{r}
+traj_name = "enterocytesTraj"
+
+cds %>%
+  colData() %>%
+  data.frame() %>%
+  dplyr::filter(level_3_annot == "Enterocyte") %>%
+  rstatix::freq_table(study)
+# A tibble: 4 × 3
+#   study                n  prop
+#   <fct>            <int> <dbl>
+# 1 CBTM_unpublished  3679  10.6
+# 2 Dominguez2022     3992  11.5
+# 3 Elmentaite2021    5010  14.4
+# 4 Kong2023         22095  63.5
+
+# Inspect which clusters have starting and end point cells
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Enterocyte") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# A tibble: 10 × 4
+#    cluster_id level_3_annot     n  prop
+#    <fct>      <fct>         <int> <dbl>
+#  1 41         Enterocyte     1168 100  
+#  2 22         Enterocyte     1163 100  
+#  3 11         Enterocyte     1160  99.8
+#  4 4          Enterocyte     1150  89.8
+#  5 20         Enterocyte     1125 100  
+#  6 28         Enterocyte     1103  99.9
+#  7 32         Enterocyte     1102  99.4
+#  8 30         Enterocyte     1082  99.7
+#  9 36         Enterocyte     1061 100  
+# 10 13         Enterocyte     1055 100  
+
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Epithelial_stem") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# A tibble: 10 × 4
+#    cluster_id level_3_annot       n  prop
+#    <fct>      <fct>           <int> <dbl>
+#  1 5          Epithelial_stem  1002  87.2
+#  2 6          Epithelial_stem    86  11.2
+#  3 10         Epithelial_stem    26   2.3
+#  4 44         Epithelial_stem     9   0.6
+#  5 46         Epithelial_stem     7   1  
+#  6 56         Epithelial_stem     6   0.7
+#  7 23         Epithelial_stem     3   0.4
+#  8 31         Epithelial_stem     3   0.3
+#  9 3          Epithelial_stem     2   0.2
+# 10 39         Epithelial_stem     2   0.3
+
+# Extract trajectory leading to INFLARE cells
+branch_end_nodes = extract_closest_nodes(cds, cell_type_oi = 'Enterocyte', min_n_cells = 100)
+branch_root_nodes = extract_closest_nodes(cds, cell_type_oi = 'Epithelial_stem')
+
+# Extract graph segment
+branch_cds <- extract_cell_trajectory(cds,
+                                       root_node = branch_end_nodes,
+                                       end_nodes = branch_root_nodes)
+
+n_cells_pseudotime <- branch_cds %>% colData() %>% data.frame() %>% rstatix::freq_table(level_3_annot)
+n_cells_pseudotime
+# A tibble: 7 × 3
+#   level_3_annot                   n  prop
+#   <fct>                       <int> <dbl>
+# 1 BEST4_enterocyte_colonocyte     3   0  
+# 2 Enterocyte                   5036  79.9
+# 3 Enteroendocrine                 3   0  
+# 4 Epithelial_stem               450   7.1
+# 5 Goblet_cycling                 12   0.2
+# 6 Microfold                       1   0  
+# 7 TA                            798  12.7
+
+# Remove cells of low abundance (most likely mislabelled)
+branch_cds <- branch_cds[, which(branch_cds$level_3_annot %in% n_cells_pseudotime$level_3_annot[n_cells_pseudotime$prop >= 2])]
+
+#FABP1, APOA4
+color_scheme = c('FABP1'='#850000',
+          'APOA4'='#ED1C24',
+          #'AQP5'='#EA906C',
+          'LGR5'='#0000CD',
+          'OLFM4'='#78CFFF',
+          #'SOX9'='#0A9B75',
+          'MKI67'='#0381F4')
+
+expr_mat <- colData(branch_cds) %>%
+  data.frame() %>%
+  tibble::add_column(pseudotime = pseudotime(branch_cds)) %>%
+  dplyr::bind_cols(assay(branch_cds[names(color_scheme),], "lognorm") %>% t() %>% as.matrix() %>% as.data.frame()) %>%
+  dplyr::mutate(pseudotime_binned = dplyr::ntile(pseudotime, n = round(max(pseudotime(branch_cds)))/0.1),
+                pseudotime_binned_mean = (pseudotime_binned-1)*0.1+0.05) %>%
+  tidyr::pivot_longer(names(color_scheme), names_to = "gene_name", values_to = "expr") 
+
+
+# Extract order of cells in trajectory
+cell_type_order = expr_mat %>%
+  rstatix::freq_table(pseudotime_binned_mean, level_3_annot) %>%
+  dplyr::group_by(level_3_annot) %>%
+  dplyr::filter(max(prop) == prop) %>%
+  dplyr::arrange(pseudotime_binned_mean) %>%
+  dplyr::pull(level_3_annot) %>%
+  unique()
+
+expr_mat %>%
+  dplyr::left_join(color_scheme %>% 
+                     enframe(name = 'gene_name', value = "gene_color") %>%
+                     dplyr::mutate(gene_color = factor(gene_color, levels = unname(color_scheme))),
+                   by = 'gene_name') %>% 
+  # Facet by max
+  dplyr::group_by(gene_name) %>%
+  dplyr::mutate(facet_nr = ifelse(max(expr) > 5, "first", "second")) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = expr, color = gene_color, fill = gene_color)) +
+  #geom_point(alpha = 0.5) +
+  geom_smooth(method = "gam", formula = y ~ splines::ns(x, df=10)) +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_continuous( n.breaks = 5) +
+  scale_color_manual(values = unname(color_scheme), labels = names(color_scheme)) +
+  scale_fill_manual(values = unname(color_scheme), labels = names(color_scheme)) +
+  labs(x = "Pseudotime", y = "Log-norm epxression", color = "Gene name", fill = "Gene name") +
+  facet_wrap(~ facet_nr, ncol = 1, scales = "free_y") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank(), strip.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))  +
+# Violin plot showing distribution of cell types along pseudotime
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50") +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 20)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25)) +
+  plot_layout(ncol = 1, heights = c(3,1))
+ggsave(paste(dataset_name, traj_name,"monocle3_markersAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 250, width = 250, units = "mm", dpi = 300)
+
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50") +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 20)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))
+ggsave(paste(dataset_name, traj_name,"monocle3_cellsAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 84, width = 250, units = "mm", dpi = 300)
+
+# Determine genes which are differentially expressed along the trahjectory
+branch_cds.degs <- graph_test(branch_cds, neighbor_graph="principal_graph", cores=5)
+
+branch_cds.degs %>%
+  dplyr::filter(!is.na(p_value)) %>%
+  dplyr::arrange(desc(morans_I)) %>%
+  tibble::rownames_to_column(var = 'gene_name') %>%
+  readr::write_csv(file = here::here("data", "megagut", paste(dataset_name, traj_name,"degsAlongTrajectory.csv", sep = "_")))
+
+# Save INFLARE cds
+saveRDS(branch_cds, here::here("data", "megagut", paste(dataset_name, traj_name, 'monocle3Traj.rds', sep = "_")))
+```
+
+## Goblet cells
+
+```{r}
+traj_name = "gobletTraj"
+
+cds %>%
+  colData() %>%
+  data.frame() %>%
+  dplyr::filter(level_3_annot == "Goblet") %>%
+  rstatix::freq_table(study)
+# # A tibble: 4 × 3
+#   study                n  prop
+#   <fct>            <int> <dbl>
+# 1 CBTM_unpublished    75   4.2
+# 2 Dominguez2022      372  21  
+# 3 Elmentaite2021     541  30.6
+# 4 Kong2023           780  44.1
+
+# Inspect which clusters have starting and end point cells
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Goblet") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# A tibble: 7 × 4
+#   cluster_id level_3_annot     n  prop
+#   <fct>      <fct>         <int> <dbl>
+# 1 49         Goblet         1374  95.5
+# 2 52         Goblet          374  57  
+# 3 35         Goblet           12   1.1
+# 4 12         Goblet            3   0.3
+# 5 31         Goblet            3   0.3
+# 6 42         Goblet            1   0.2
+# 7 45         Goblet            1   0.4
+
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Epithelial_stem") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# A tibble: 10 × 4
+#    cluster_id level_3_annot       n  prop
+#    <fct>      <fct>           <int> <dbl>
+#  1 5          Epithelial_stem  1002  87.2
+#  2 6          Epithelial_stem    86  11.2
+#  3 10         Epithelial_stem    26   2.3
+#  4 44         Epithelial_stem     9   0.6
+#  5 46         Epithelial_stem     7   1  
+#  6 56         Epithelial_stem     6   0.7
+#  7 23         Epithelial_stem     3   0.4
+#  8 31         Epithelial_stem     3   0.3
+#  9 3          Epithelial_stem     2   0.2
+# 10 39         Epithelial_stem     2   0.3
+
+# Extract trajectory leading to INFLARE cells
+branch_end_nodes = extract_closest_nodes(cds, cell_type_oi = 'Goblet', min_n_cells = 50)
+branch_root_nodes = extract_closest_nodes(cds, cell_type_oi = 'Epithelial_stem')
+
+# Extract graph segment
+branch_cds <- extract_cell_trajectory(cds,
+                                       root_node = branch_end_nodes,
+                                       end_nodes = branch_root_nodes)
+
+n_cells_pseudotime <- branch_cds %>% colData() %>% data.frame() %>% rstatix::freq_table(level_3_annot)
+n_cells_pseudotime
+# A tibble: 11 × 3
+#    level_3_annot                   n  prop
+#    <fct>                       <int> <dbl>
+#  1 BEST4_enterocyte_colonocyte     2   0  
+#  2 Enterocyte                     15   0.3
+#  3 Enteroendocrine                 3   0.1
+#  4 Epithelial_stem               466  10.1
+#  5 Goblet                        716  15.5
+#  6 Goblet_cycling               1027  22.2
+#  7 Goblet_progenitor            1018  22  
+#  8 Microfold                       1   0  
+#  9 Paneth                         17   0.4
+# 10 Surface_foveolar                8   0.2
+# 11 TA                           1344  29.1
+
+# Remove cells of low abundance (most likely mislabelled)
+branch_cds <- branch_cds[, which(branch_cds$level_3_annot %in% n_cells_pseudotime$level_3_annot[n_cells_pseudotime$prop >= 2])]
+
+#MUC2, TFF3, GAU1
+color_scheme = c(#'GAU1'='#850000',
+          'TFF3'='#ED1C24',
+          'MUC2'='#EA906C',
+          'LGR5'='#0000CD',
+          'OLFM4'='#78CFFF',
+          #'SOX9'='#0A9B75',
+          'MKI67'='#0381F4')
+
+expr_mat <- colData(branch_cds) %>%
+  data.frame() %>%
+  tibble::add_column(pseudotime = pseudotime(branch_cds)) %>%
+  dplyr::bind_cols(assay(branch_cds[names(color_scheme),], "lognorm") %>% t() %>% as.matrix() %>% as.data.frame()) %>%
+  dplyr::mutate(pseudotime_binned = dplyr::ntile(pseudotime, n = round(max(pseudotime(branch_cds)))/0.1),
+                pseudotime_binned_mean = (pseudotime_binned-1)*0.1+0.05) %>%
+  tidyr::pivot_longer(names(color_scheme), names_to = "gene_name", values_to = "expr") 
+
+
+# Extract order of cells in trajectory
+cell_type_order = expr_mat %>%
+  rstatix::freq_table(pseudotime_binned_mean, level_3_annot) %>%
+  dplyr::group_by(level_3_annot) %>%
+  dplyr::filter(max(n) == n) %>%
+  dplyr::arrange(pseudotime_binned_mean) %>%
+  dplyr::pull(level_3_annot) %>%
+  unique()
+
+expr_mat %>%
+  dplyr::left_join(color_scheme %>% 
+                     enframe(name = 'gene_name', value = "gene_color") %>%
+                     dplyr::mutate(gene_color = factor(gene_color, levels = unname(color_scheme))),
+                   by = 'gene_name') %>% 
+  # Facet by max
+  dplyr::group_by(gene_name) %>%
+  dplyr::mutate(facet_nr = ifelse(max(expr) > 5, "first", "second")) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = expr, color = gene_color, fill = gene_color)) +
+  #geom_point(alpha = 0.5) +
+  geom_smooth(method = "gam", formula = y ~ splines::ns(x, df=10)) +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_continuous( n.breaks = 5) +
+  scale_color_manual(values = unname(color_scheme), labels = names(color_scheme)) +
+  scale_fill_manual(values = unname(color_scheme), labels = names(color_scheme)) +
+  labs(x = "Pseudotime", y = "Log-norm epxression", color = "Gene name", fill = "Gene name") +
+  facet_wrap(~ facet_nr, ncol = 1, scales = "free_y") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank(), strip.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))  +
+# Violin plot showing distribution of cell types along pseudotime
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50") +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 20)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25)) +
+  plot_layout(ncol = 1, heights = c(3,1))
+ggsave(paste(dataset_name, traj_name,"monocle3_markersAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 250, width = 250, units = "mm", dpi = 300)
+
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50") +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 20)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))
+ggsave(paste(dataset_name, traj_name,"monocle3_cellsAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 84, width = 250, units = "mm", dpi = 300)
+
+# Determine genes which are differentially expressed along the trahjectory
+branch_cds.degs <- graph_test(branch_cds, neighbor_graph="principal_graph", cores=5)
+
+branch_cds.degs %>%
+  dplyr::filter(!is.na(p_value)) %>%
+  dplyr::arrange(desc(morans_I)) %>%
+  tibble::rownames_to_column(var = 'gene_name') %>%
+  readr::write_csv(file = here::here("data", "megagut", paste(dataset_name, traj_name,"degsAlongTrajectory.csv", sep = "_")))
+
+# Save INFLARE cds
+saveRDS(branch_cds, here::here("data", "megagut", paste(dataset_name, traj_name, 'monocle3Traj.rds', sep = "_")))
+```
+
+## Paneth cells
+
+```{r}
+traj_name = "panethTraj"
+
+cds %>%
+  colData() %>%
+  data.frame() %>%
+  dplyr::filter(level_3_annot == "Paneth") %>%
+  rstatix::freq_table(study)
+# A tibble: 4 × 3
+#   study                n  prop
+#   <fct>            <int> <dbl>
+# 1 CBTM_unpublished    24   3  
+# 2 Dominguez2022        1   0.1
+# 3 Elmentaite2021     198  25  
+# 4 Kong2023           568  71.8
+
+# Inspect which clusters have starting and end point cells
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Paneth") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# A tibble: 7 × 4
+#   cluster_id level_3_annot     n  prop
+#   <fct>      <fct>         <int> <dbl>
+# 1 56         Paneth          770  93.4
+# 2 10         Paneth           14   1.3
+# 3 5          Paneth            2   0.2
+# 4 12         Paneth            2   0.2
+# 5 35         Paneth            1   0.1
+# 6 46         Paneth            1   0.1
+# 7 52         Paneth            1   0.2
+
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Epithelial_stem") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# A tibble: 10 × 4
+#    cluster_id level_3_annot       n  prop
+#    <fct>      <fct>           <int> <dbl>
+#  1 5          Epithelial_stem  1002  87.2
+#  2 6          Epithelial_stem    86  11.2
+#  3 10         Epithelial_stem    26   2.3
+#  4 44         Epithelial_stem     9   0.6
+#  5 46         Epithelial_stem     7   1  
+#  6 56         Epithelial_stem     6   0.7
+#  7 23         Epithelial_stem     3   0.4
+#  8 31         Epithelial_stem     3   0.3
+#  9 3          Epithelial_stem     2   0.2
+# 10 39         Epithelial_stem     2   0.3
+
+# Extract trajectory leading to INFLARE cells
+branch_end_nodes = extract_closest_nodes(cds, cell_type_oi = 'Paneth', min_n_cells = 50)
+branch_root_nodes = extract_closest_nodes(cds, cell_type_oi = 'Epithelial_stem')
+
+# Extract graph segment
+branch_cds <- extract_cell_trajectory(cds,
+                                       root_node = branch_end_nodes,
+                                       end_nodes = branch_root_nodes)
+
+n_cells_pseudotime <- branch_cds %>% colData() %>% data.frame() %>% rstatix::freq_table(level_3_annot)
+n_cells_pseudotime
+# A tibble: 10 × 3
+#    level_3_annot         n  prop
+#    <fct>             <int> <dbl>
+#  1 Enterocyte           30   2.8
+#  2 Enteroendocrine      31   2.9
+#  3 Epithelial_stem     636  59.2
+#  4 Goblet_cycling        2   0.2
+#  5 Goblet_progenitor     2   0.2
+#  6 Microfold             1   0.1
+#  7 Mucous_gland_neck     1   0.1
+#  8 Paneth              332  30.9
+#  9 TA                   38   3.5
+# 10 Tuft                  2   0.2
+
+# Remove cells of low abundance (most likely mislabelled)
+branch_cds <- branch_cds[, which(branch_cds$level_3_annot %in% n_cells_pseudotime$level_3_annot[n_cells_pseudotime$prop >= 5])]
+
+#DEFA5, REG3A
+color_scheme = c(#'GAU1'='#850000',
+          'DEFA5'='#ED1C24',
+          'REG3A'='#EA906C',
+          'LGR5'='#0000CD',
+          'OLFM4'='#78CFFF',
+          #'SOX9'='#0A9B75',
+          'MKI67'='#0381F4')
+
+expr_mat <- colData(branch_cds) %>%
+  data.frame() %>%
+  tibble::add_column(pseudotime = pseudotime(branch_cds)) %>%
+  dplyr::bind_cols(assay(branch_cds[names(color_scheme),], "lognorm") %>% t() %>% as.matrix() %>% as.data.frame()) %>%
+  dplyr::mutate(pseudotime_binned = dplyr::ntile(pseudotime, n = round(max(pseudotime(branch_cds)))/0.1),
+                pseudotime_binned_mean = (pseudotime_binned-1)*0.1+0.05) %>%
+  tidyr::pivot_longer(names(color_scheme), names_to = "gene_name", values_to = "expr") 
+
+
+# Extract order of cells in trajectory
+cell_type_order = expr_mat %>%
+  rstatix::freq_table(pseudotime_binned_mean, level_3_annot) %>%
+  dplyr::group_by(level_3_annot) %>%
+  dplyr::filter(max(n) == n) %>%
+  dplyr::arrange(pseudotime_binned_mean) %>%
+  dplyr::pull(level_3_annot) %>%
+  unique()
+
+expr_mat %>%
+  dplyr::left_join(color_scheme %>% 
+                     enframe(name = 'gene_name', value = "gene_color") %>%
+                     dplyr::mutate(gene_color = factor(gene_color, levels = unname(color_scheme))),
+                   by = 'gene_name') %>% 
+  # Facet by max
+  dplyr::group_by(gene_name) %>%
+  dplyr::mutate(facet_nr = ifelse(max(expr) > 5, "first", "second")) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = expr, color = gene_color, fill = gene_color)) +
+  #geom_point(alpha = 0.5) +
+  geom_smooth(method = "gam", formula = y ~ splines::ns(x, df=10)) +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_continuous( n.breaks = 5) +
+  scale_color_manual(values = unname(color_scheme), labels = names(color_scheme)) +
+  scale_fill_manual(values = unname(color_scheme), labels = names(color_scheme)) +
+  labs(x = "Pseudotime", y = "Log-norm epxression", color = "Gene name", fill = "Gene name") +
+  facet_wrap(~ facet_nr, ncol = 1, scales = "free_y") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank(), strip.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))  +
+# Violin plot showing distribution of cell types along pseudotime
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50") +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 20)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25)) +
+  plot_layout(ncol = 1, heights = c(3,1))
+ggsave(paste(dataset_name, traj_name,"monocle3_markersAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 250, width = 250, units = "mm", dpi = 300)
+
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50") +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 20)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))
+ggsave(paste(dataset_name, traj_name,"monocle3_cellsAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 84, width = 250, units = "mm", dpi = 300)
+
+# Determine genes which are differentially expressed along the trahjectory
+branch_cds.degs <- graph_test(branch_cds, neighbor_graph="principal_graph", cores=5)
+
+branch_cds.degs %>%
+  dplyr::filter(!is.na(p_value)) %>%
+  dplyr::arrange(desc(morans_I)) %>%
+  tibble::rownames_to_column(var = 'gene_name') %>%
+  readr::write_csv(file = here::here("data", "megagut", paste(dataset_name, traj_name,"degsAlongTrajectory.csv", sep = "_")))
+
+# Save INFLARE cds
+saveRDS(branch_cds, here::here("data", "megagut", paste(dataset_name, traj_name, 'monocle3Traj.rds', sep = "_")))
+```
+
+
+## Enteroendocrine cells
+
+```{r}
+traj_name = "enteroendocrineTraj"
+
+cds %>%
+  colData() %>%
+  data.frame() %>%
+  dplyr::filter(level_3_annot == "Enteroendocrine") %>%
+  rstatix::freq_table(study)
+# A tibble: 4 × 3
+#   study                n  prop
+#   <fct>            <int> <dbl>
+# 1 CBTM_unpublished    34  11.6
+# 2 Dominguez2022       30  10.3
+# 3 Elmentaite2021      32  11  
+# 4 Kong2023           196  67.1
+
+# Inspect which clusters have starting and end point cells
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Enteroendocrine") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# A tibble: 8 × 4
+#   cluster_id level_3_annot       n  prop
+#   <fct>      <fct>           <int> <dbl>
+# 1 45         Enteroendocrine   268  97.5
+# 2 56         Enteroendocrine    17   2.1
+# 3 10         Enteroendocrine     2   0.2
+# 4 5          Enteroendocrine     1   0.1
+# 5 6          Enteroendocrine     1   0.1
+# 6 44         Enteroendocrine     1   0.1
+# 7 49         Enteroendocrine     1   0.1
+# 8 50         Enteroendocrine     1   0.2
+
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Epithelial_stem") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# A tibble: 10 × 4
+#    cluster_id level_3_annot       n  prop
+#    <fct>      <fct>           <int> <dbl>
+#  1 5          Epithelial_stem  1002  87.2
+#  2 6          Epithelial_stem    86  11.2
+#  3 10         Epithelial_stem    26   2.3
+#  4 44         Epithelial_stem     9   0.6
+#  5 46         Epithelial_stem     7   1  
+#  6 56         Epithelial_stem     6   0.7
+#  7 23         Epithelial_stem     3   0.4
+#  8 31         Epithelial_stem     3   0.3
+#  9 3          Epithelial_stem     2   0.2
+# 10 39         Epithelial_stem     2   0.3
+
+# Extract trajectory leading to INFLARE cells
+branch_end_nodes = extract_closest_nodes(cds, cell_type_oi = 'Enteroendocrine', min_n_cells = 20)
+branch_root_nodes = extract_closest_nodes(cds, cell_type_oi = 'Epithelial_stem')
+
+# Extract graph segment
+branch_cds <- extract_cell_trajectory(cds,
+                                       root_node = branch_end_nodes,
+                                       end_nodes = branch_root_nodes)
+
+n_cells_pseudotime <- branch_cds %>% colData() %>% data.frame() %>% rstatix::freq_table(level_3_annot)
+n_cells_pseudotime
+# A tibble: 8 × 3
+#   level_3_annot         n  prop
+#   <fct>             <int> <dbl>
+# 1 Enterocyte            2   0.3
+# 2 Enteroendocrine     255  40.9
+# 3 Epithelial_stem     322  51.7
+# 4 Goblet                1   0.2
+# 5 Goblet_cycling        2   0.3
+# 6 Goblet_progenitor     1   0.2
+# 7 Microfold             1   0.2
+# 8 TA                   39   6.3
+
+# Remove cells of low abundance (most likely mislabelled)
+branch_cds <- branch_cds[, which(branch_cds$level_3_annot %in% n_cells_pseudotime$level_3_annot[n_cells_pseudotime$prop >= 5])]
+
+#CHGA, SCGN
+color_scheme = c(#'GAU1'='#850000',
+          'CHGA'='#ED1C24',
+          'SCGN'='#EA906C',
+          'LGR5'='#0000CD',
+          'OLFM4'='#78CFFF',
+          #'SOX9'='#0A9B75',
+          'MKI67'='#0381F4')
+
+expr_mat <- colData(branch_cds) %>%
+  data.frame() %>%
+  tibble::add_column(pseudotime = pseudotime(branch_cds)) %>%
+  dplyr::bind_cols(assay(branch_cds[names(color_scheme),], "lognorm") %>% t() %>% as.matrix() %>% as.data.frame()) %>%
+  dplyr::mutate(pseudotime_binned = dplyr::ntile(pseudotime, n = round(max(pseudotime(branch_cds)))/0.1),
+                pseudotime_binned_mean = (pseudotime_binned-1)*0.1+0.05) %>%
+  tidyr::pivot_longer(names(color_scheme), names_to = "gene_name", values_to = "expr") 
+
+
+# Extract order of cells in trajectory
+cell_type_order = expr_mat %>%
+  rstatix::freq_table(pseudotime_binned_mean, level_3_annot) %>%
+  dplyr::group_by(level_3_annot) %>%
+  dplyr::filter(max(prop) == prop) %>%
+  dplyr::arrange(pseudotime_binned_mean) %>%
+  dplyr::pull(level_3_annot) %>%
+  unique()
+
+expr_mat %>%
+  dplyr::left_join(color_scheme %>% 
+                     enframe(name = 'gene_name', value = "gene_color") %>%
+                     dplyr::mutate(gene_color = factor(gene_color, levels = unname(color_scheme))),
+                   by = 'gene_name') %>% 
+  # Facet by max
+  dplyr::group_by(gene_name) %>%
+  dplyr::mutate(facet_nr = ifelse(max(expr) > 5, "first", "second")) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = expr, color = gene_color, fill = gene_color)) +
+  #geom_point(alpha = 0.5) +
+  geom_smooth(method = "gam", formula = y ~ splines::ns(x, df=10)) +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_continuous( n.breaks = 5) +
+  scale_color_manual(values = unname(color_scheme), labels = names(color_scheme)) +
+  scale_fill_manual(values = unname(color_scheme), labels = names(color_scheme)) +
+  labs(x = "Pseudotime", y = "Log-norm epxression", color = "Gene name", fill = "Gene name") +
+  facet_wrap(~ facet_nr, ncol = 1, scales = "free_y") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank(), strip.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))  +
+# Violin plot showing distribution of cell types along pseudotime
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50", scale = 'count') +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 20)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25)) +
+  plot_layout(ncol = 1, heights = c(3,1))
+ggsave(paste(dataset_name, traj_name,"monocle3_markersAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 250, width = 250, units = "mm", dpi = 300)
+
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50", scale = 'count') +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 20)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))
+ggsave(paste(dataset_name, traj_name,"monocle3_cellsAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 84, width = 250, units = "mm", dpi = 300)
+
+# Determine genes which are differentially expressed along the trahjectory
+branch_cds.degs <- graph_test(branch_cds, neighbor_graph="principal_graph", cores=5)
+
+branch_cds.degs %>%
+  dplyr::filter(!is.na(p_value)) %>%
+  dplyr::arrange(desc(morans_I)) %>%
+  tibble::rownames_to_column(var = 'gene_name') %>%
+  readr::write_csv(file = here::here("data", "megagut", paste(dataset_name, traj_name,"degsAlongTrajectory.csv", sep = "_")))
+
+# Save INFLARE cds
+saveRDS(branch_cds, here::here("data", "megagut", paste(dataset_name, traj_name, 'monocle3Traj.rds', sep = "_")))
+```
+
+# Healthy duodenum 
+
+```{r}
+dataset_name = "megagut_ctrlDuodenum"
+
+sce_colData %>%
+  dplyr::filter(organ_unified == 'duodenum', disease == "control") %>%
+  rstatix::freq_table(study)
+# A tibble: 5 × 3
+#   study                n  prop
+#   <fct>            <int> <dbl>
+# 1 CBTM_unpublished     2   0  
+# 2 Dominguez2022      210   1.7
+# 3 Elmentaite2021    7761  61.3
+# 4 Fitzpatrick2023    670   5.3
+# 5 Yu2021            4028  31.8
+
+# Filter sce
+barcodes = sce_colData %>%
+  dplyr::filter(organ_unified == 'duodenum', disease == "control") %>%
+  {rownames(.)}
+
+sce <- sce[, barcodes]
+
+
+# Create monocle cell data set
+cds <- new_cell_data_set(counts(sce),
+                         cell_metadata = colData(sce),
+                         gene_metadata = rowData(sce) %>%
+                           data.frame() %>%
+                           tibble::add_column(gene_short_name = rownames(sce)))
+
+# Add precomputed UMAP (from scANVI manifold) as reducedDim to skip pre-processing
+reducedDim(cds, "UMAP") = reducedDim(sce, "UMAP")
+reducedDim(cds, "PCA") <- reducedDim(sce, "X_scANVI")
+counts(cds) <- counts(sce) %>% `colnames<-`(colnames(cds))
+assay(cds, "lognorm") <- assay(sce, "lognorm") %>% `colnames<-`(colnames(cds))
+
+# Set seed
+set.seed(444)
+
+# Inspect UMAP
+p <- plot_cells(cds, color_cells_by = "organ_unified", alpha = 0.5)
+p
+ggsave(paste0(dataset_name, "_allEpithelial_organ_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 170, width = 250, units = "mm", dpi = 300)
+
+p <- plot_cells(cds, color_cells_by = "level_3_annot", alpha = 0.5)
+p
+ggsave(paste0(dataset_name, "_allEpithelial_cellType_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 170, width = 250, units = "mm", dpi = 300)
+
+p <- plot_cells(cds, color_cells_by = "study", alpha = 0.5)
+p
+ggsave(paste0(dataset_name, "_allEpithelial_study_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 170, width = 250, units = "mm", dpi = 300)
+
+## Setp 3: Cluster cells
+cds <- cluster_cells(cds, cluster_method = "louvain", k = 15)
+
+p <- plot_cells(cds, color_cells_by = "cluster", show_trajectory_graph = F)
+p
+ggsave(paste0(dataset_name, "_allEpithelial_monocle3Clusters_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 170, width = 250, units = "mm", dpi = 300)
+
+# Inspect which clusters have which cells (to select start and end points of trajectory)
+cds_clusterComp <- colData(cds) %>%
+  data.frame() %>%
+  tibble::add_column(cluster_id = unname(cds@clusters$UMAP$clusters)) %>%
+  rstatix::freq_table(cluster_id, level_3_annot)
+
+## Step 4: Learn graph
+cds <- learn_graph(cds, learn_graph_control = list(nn.cores = 7, nn.k = 15))
+
+# Choose root nodes and infer pseudotime
+stem_nodes = extract_closest_nodes(cds, cell_type_oi = 'Epithelial_stem', min_n_cells = 10)
+cds <- order_cells(cds, root_pr_nodes = stem_nodes)
+saveRDS(cds, here::here('data', 'megagut', paste0(dataset_name, '_monocle3Cds.rds')))
+#cds <- readRDS(here::here('data', 'megagut',paste0(dataset_name, '_monocle3Cds.rds')))
+
+# Plot cells along pseudotime
+p <- plot_cells(cds,
+           color_cells_by = "pseudotime",
+           trajectory_graph_color = 'grey80',
+           label_cell_groups=F, 
+           label_leaves=F,
+           label_branch_points=FALSE, 
+           label_roots = F,
+           graph_label_size=1.5)
+p
+ggsave(paste0(dataset_name, "_monocle3Pseudotime_umap.png"), 
+       path = here::here("plots/megagut"),
+       height = 250, width = 250, units = "mm", dpi = 300)
+``` 
+
+## Mucous gland neck cells
+
+```{r}
+traj_name = "mucousGlandNeckTraj"
+
+cds %>%
+  colData() %>%
+  data.frame() %>%
+  dplyr::filter(level_3_annot == "Mucous_gland_neck") %>%
+  rstatix::freq_table(study)
+# A tibble: 3 × 3
+#   study               n  prop
+#   <fct>           <int> <dbl>
+# 1 Elmentaite2021     61  85.9
+# 2 Fitzpatrick2023     2   2.8
+# 3 Yu2021              8  11.3
+
+# Inspect which clusters have starting and end point cells
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Mucous_gland_neck") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# A tibble: 1 × 4
+#   cluster_id level_3_annot         n  prop
+#   <fct>      <fct>             <int> <dbl>
+# 1 18         Mucous_gland_neck    71    34
+
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Epithelial_stem") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# A tibble: 9 × 4
+#   cluster_id level_3_annot       n  prop
+#   <fct>      <fct>           <int> <dbl>
+# 1 14         Epithelial_stem   220  84.3
+# 2 29         Epithelial_stem    64  18.6
+# 3 24         Epithelial_stem    11   3  
+# 4 18         Epithelial_stem     5   2.4
+# 5 16         Epithelial_stem     3   1  
+# 6 20         Epithelial_stem     2   1.2
+# 7 1          Epithelial_stem     1   0.4
+# 8 10         Epithelial_stem     1   0.5
+# 9 28         Epithelial_stem     1   0.6
+
+# Extract trajectory leading to INFLARE cells
+branch_end_nodes = extract_closest_nodes(cds, cell_type_oi = 'Mucous_gland_neck', min_n_cells = 20)
+branch_root_nodes = extract_closest_nodes(cds, cell_type_oi = 'Epithelial_stem')
+
+# Extract graph segment
+branch_cds <- extract_cell_trajectory(cds,
+                                       root_node = branch_end_nodes,
+                                       end_nodes = branch_root_nodes)
+
+n_cells_pseudotime <- branch_cds %>% colData() %>% data.frame() %>% rstatix::freq_table(level_3_annot)
+n_cells_pseudotime
+# # A tibble: 9 × 3
+#   level_3_annot                   n  prop
+#   <fct>                       <int> <dbl>
+# 1 BEST4_enterocyte_colonocyte    14   1.9
+# 2 Enterocyte                     39   5.4
+# 3 Epithelial_stem               283  38.9
+# 4 Goblet                          1   0.1
+# 5 Goblet_cycling                  2   0.3
+# 6 Microfold                       2   0.3
+# 7 Mucous_gland_neck              66   9.1
+# 8 Surface_foveolar                7   1  
+# 9 TA                            314  43.1
+
+# Remove cells of low abundance (most likely mislabelled)
+branch_cds <- branch_cds[, which(branch_cds$level_3_annot %in% n_cells_pseudotime$level_3_annot[n_cells_pseudotime$prop > 6])]
+
+color_scheme = c('PGC'='#850000',
+                 'MUC6'='#ED1C24',
+                 'AQP5'='#EA906C',
+                 'LGR5'='#0000CD',
+                 'OLFM4'='#78CFFF',
+                 #'KLF5'='#6CC4BC',
+                 'SOX9'='#0A9B75',
+                 'LEFTY1'='#0381F4')
+
+expr_mat <- colData(branch_cds) %>%
+  data.frame() %>%
+  tibble::add_column(pseudotime = pseudotime(branch_cds)) %>%
+  dplyr::bind_cols(assay(branch_cds[names(color_scheme),], "lognorm") %>% t() %>% as.matrix() %>% as.data.frame()) %>%
+  dplyr::mutate(pseudotime_binned = dplyr::ntile(pseudotime, n = round(max(pseudotime(branch_cds)))/0.1),
+                pseudotime_binned_mean = (pseudotime_binned-1)*0.1+0.05) %>%
+  tidyr::pivot_longer(names(color_scheme), names_to = "gene_name", values_to = "expr") 
+
+# Extract order of cells in trajectory
+cell_type_order = expr_mat %>%
+  rstatix::freq_table(pseudotime_binned_mean, level_3_annot) %>%
+  dplyr::group_by(level_3_annot) %>%
+  dplyr::filter(max(n) == n) %>%
+  dplyr::arrange(pseudotime_binned_mean) %>%
+  dplyr::pull(level_3_annot) %>%
+  unique()
+
+expr_mat %>%
+  dplyr::left_join(color_scheme %>% 
+                     enframe(name = 'gene_name', value = "gene_color") %>%
+                     dplyr::mutate(gene_color = factor(gene_color, levels = unname(color_scheme))),
+                   by = 'gene_name') %>% 
+  # Facet by max
+  dplyr::group_by(gene_name) %>%
+  dplyr::mutate(facet_nr = ifelse(max(expr) > 5, "first", "second")) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = expr, color = gene_color, fill = gene_color)) +
+  #geom_point(alpha = 0.5) +
+  geom_smooth(method = "gam", formula = y ~ splines::ns(x, df=10)) +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_continuous( n.breaks = 5) +
+  scale_color_manual(values = unname(color_scheme), labels = names(color_scheme)) +
+  scale_fill_manual(values = unname(color_scheme), labels = names(color_scheme)) +
+  labs(x = "Pseudotime", y = "Log-norm epxression", color = "Gene name", fill = "Gene name") +
+  facet_wrap(~ facet_nr, ncol = 1, scales = "free_y") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank(), strip.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))  +
+# Violin plot showing distribution of cell types along pseudotime
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50") +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 20)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25)) +
+  plot_layout(ncol = 1, heights = c(3,1))
+ggsave(paste(dataset_name, traj_name,"monocle3_markersAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 250, width = 250, units = "mm", dpi = 300)
+
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50") +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 20)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))
+ggsave(paste(dataset_name, traj_name,"monocle3_cellsAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 84, width = 250, units = "mm", dpi = 300)
+
+# Determine genes which are differentially expressed along the trahjectory
+branch_cds.degs <- graph_test(branch_cds, neighbor_graph="principal_graph", cores=5)
+
+branch_cds.degs %>%
+  dplyr::filter(!is.na(p_value)) %>%
+  dplyr::arrange(desc(morans_I)) %>%
+  tibble::rownames_to_column(var = 'gene_name') %>%
+  readr::write_csv(file = here::here("data", "megagut", paste(dataset_name, traj_name,"degsAlongTrajectory.csv", sep = "_")))
+
+# Save INFLARE cds
+saveRDS(branch_cds, here::here("data", "megagut", paste(dataset_name, traj_name, 'monocle3Traj.rds', sep = "_")))
+```
+
+## Surface foveolar cells
+
+```{r}
+traj_name = "surfaceFoveolarTraj"
+
+cds %>%
+  colData() %>%
+  data.frame() %>%
+  dplyr::filter(level_3_annot == "Surface_foveolar") %>%
+  rstatix::freq_table(study)
+# # A tibble: 3 × 3
+#   study               n  prop
+#   <fct>           <int> <dbl>
+# 1 Elmentaite2021    628  99.2
+# 2 Fitzpatrick2023     1   0.2
+# 3 Yu2021              4   0.6
+
+# Inspect which clusters have starting and end point cells
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Surface_foveolar") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# # A tibble: 10 × 4
+#    cluster_id level_3_annot        n  prop
+#    <fct>      <fct>            <int> <dbl>
+#  1 34         Surface_foveolar   305  95.9
+#  2 31         Surface_foveolar   195  52.4
+#  3 26         Surface_foveolar    95  24.9
+#  4 30         Surface_foveolar     8   2.8
+#  5 23         Surface_foveolar     7   1.3
+#  6 36         Surface_foveolar     7   1.8
+#  7 18         Surface_foveolar     6   2.9
+#  8 35         Surface_foveolar     3   0.8
+#  9 16         Surface_foveolar     2   0.7
+# 10 7          Surface_foveolar     1   0.3
+
+cds_clusterComp %>%
+  dplyr::filter(level_3_annot == "Epithelial_stem") %>%
+  dplyr::arrange(desc(n)) %>%
+  dplyr::slice(1:10)
+# A tibble: 9 × 4
+#   cluster_id level_3_annot       n  prop
+#   <fct>      <fct>           <int> <dbl>
+# 1 14         Epithelial_stem   220  84.3
+# 2 29         Epithelial_stem    64  18.6
+# 3 24         Epithelial_stem    11   3  
+# 4 18         Epithelial_stem     5   2.4
+# 5 16         Epithelial_stem     3   1  
+# 6 20         Epithelial_stem     2   1.2
+# 7 1          Epithelial_stem     1   0.4
+# 8 10         Epithelial_stem     1   0.5
+# 9 28         Epithelial_stem     1   0.6
+
+# Extract trajectory leading to INFLARE cells
+branch_end_nodes = extract_closest_nodes(cds, cell_type_oi = 'Surface_foveolar', min_n_cells = 10)
+branch_root_nodes = extract_closest_nodes(cds, cell_type_oi = 'Epithelial_stem')
+
+# Extract graph segment
+branch_cds <- extract_cell_trajectory(cds,
+                                       root_node = branch_end_nodes,
+                                       end_nodes = branch_root_nodes)
+
+n_cells_pseudotime <- branch_cds %>% colData() %>% data.frame() %>% rstatix::freq_table(level_3_annot)
+n_cells_pseudotime
+# A tibble: 6 × 3
+#   level_3_annot        n  prop
+#   <fct>            <int> <dbl>
+# 1 Enterocyte          27   2.3
+# 2 Epithelial_stem    264  23  
+# 3 Goblet               5   0.4
+# 4 Goblet_cycling       5   0.4
+# 5 Surface_foveolar   320  27.9
+# 6 TA                 528  46  
+
+# Remove cells of low abundance (most likely mislabelled)
+branch_cds <- branch_cds[, which(branch_cds$level_3_annot %in% n_cells_pseudotime$level_3_annot[n_cells_pseudotime$prop >= 5])]
+
+color_scheme = c('CEACAM7'='#850000',
+          'MUC5AC'='#ED1C24',
+          'GKN2'='#EA906C',
+          'SLC26A3' = '#FF5B29',
+          'LGR5'='#0000CD',
+          'OLFM4'='#78CFFF',
+          #'KLF5'='#6CC4BC',
+          'MKI67'='#0A9B75'
+          )
+
+# A tibble: 8 × 14
+#   gene_name variable     n   min   max median    q1    q3   iqr   mad  mean    sd    se    ci
+#   <chr>     <fct>    <dbl> <dbl> <dbl>  <dbl> <dbl> <dbl> <dbl> <dbl> <dbl> <dbl> <dbl> <dbl>
+# 1 CEACAM7   expr       955     0  0      0     0    0     0     0     0     0     0     0    
+# 2 GKN2      expr       955     0  4.18   0     0    0     0     0     0.058 0.388 0.013 0.025
+# 3 KLF5      expr       955     0  3.28   1.15  0    1.60  1.60  0.874 1.01  0.766 0.025 0.049
+# 4 LGR5      expr       955     0  2.16   0     0    0     0     0     0.111 0.354 0.011 0.022
+# 5 MKI67     expr       955     0  2.25   0     0    0     0     0     0.09  0.304 0.01  0.019
+# 6 MUC5AC    expr       955     0  5.59   0     0    0     0     0     0.287 0.97  0.031 0.062
+# 7 OLFM4     expr       955     0  5.55   2.92  1.08 3.74  2.66  1.56  2.46  1.57  0.051 0.1  
+# 8 SLC26A3   expr       955     0  3.54   0     0    0.922 0.922 0     0.511 0.818 0.026 0.052
+
+expr_mat <- colData(branch_cds) %>%
+  data.frame() %>%
+  tibble::add_column(pseudotime = pseudotime(branch_cds)) %>%
+  dplyr::bind_cols(assay(branch_cds[names(color_scheme),], "lognorm") %>% t() %>% as.matrix() %>% as.data.frame()) %>%
+  dplyr::mutate(pseudotime_binned = dplyr::ntile(pseudotime, n = round(max(pseudotime(branch_cds)))/0.1),
+                pseudotime_binned_mean = (pseudotime_binned-1)*0.1+0.05) %>%
+  tidyr::pivot_longer(names(color_scheme), names_to = "gene_name", values_to = "expr") 
+
+# Extract order of cells in trajectory
+cell_type_order = expr_mat %>%
+  rstatix::freq_table(pseudotime_binned_mean, level_3_annot) %>%
+  dplyr::group_by(level_3_annot) %>%
+  dplyr::filter(max(n) == n) %>%
+  dplyr::arrange(pseudotime_binned_mean) %>%
+  dplyr::pull(level_3_annot) %>%
+  unique()
+
+expr_mat %>%
+  dplyr::left_join(color_scheme %>% 
+                     enframe(name = 'gene_name', value = "gene_color") %>%
+                     dplyr::mutate(gene_color = factor(gene_color, levels = unname(color_scheme))),
+                   by = 'gene_name') %>% 
+  # Facet by max
+  dplyr::group_by(gene_name) %>%
+  dplyr::mutate(facet_nr = ifelse(max(expr) > 5, "first", "second")) %>%
+  dplyr::ungroup() %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = expr, color = gene_color, fill = gene_color)) +
+  #geom_point(alpha = 0.5) +
+  geom_smooth(method = "gam", formula = y ~ splines::ns(x, df=10)
+              ) +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_continuous( n.breaks = 5) +
+  scale_color_manual(values = unname(color_scheme), labels = names(color_scheme), drop = F) +
+  scale_fill_manual(values = unname(color_scheme), labels = names(color_scheme), drop = F) +
+  labs(x = "Pseudotime", y = "Log-norm epxression", color = "Gene name", fill = "Gene name") +
+  facet_wrap(~ facet_nr, ncol = 1, scales = "free_y") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank(), strip.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))  +
+# Violin plot showing distribution of cell types along pseudotime
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50") +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 30)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25)) +
+  plot_layout(ncol = 1, heights = c(3,1))
+ggsave(paste(dataset_name, traj_name,"monocle3_markersAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 250, width = 250, units = "mm", dpi = 300)
+
+expr_mat %>%
+  dplyr::mutate(level_3_annot = factor(level_3_annot, levels = cell_type_order)) %>%
+  ggplot(aes(x = pseudotime_binned_mean, y = level_3_annot)) +
+  geom_violin(fill = "grey50") +
+  scale_x_continuous(expand = expansion(0,0)) +
+  scale_y_discrete(labels = function(x) prettify_labels(x, 20)) +
+  labs(x = "Pseudotime", y = "Cell type") +
+  theme_panGI(base_size = 20) +
+  theme(axis.text.x.bottom = element_text(angle = 0, hjust = 0.5),
+        panel.border = element_rect(fill = NA, color = "black", linewidth = 0.25))
+ggsave(paste(dataset_name, traj_name,"monocle3_cellsAlongPseudotime.png", sep = "_"), 
+       path = here::here("plots/megagut"),
+       height = 84, width = 250, units = "mm", dpi = 300)
+
+# Determine genes which are differentially expressed along the trahjectory
+branch_cds.degs <- graph_test(branch_cds, neighbor_graph="principal_graph", cores=5)
+
+branch_cds.degs %>%
+  dplyr::filter(!is.na(p_value)) %>%
+  dplyr::arrange(desc(morans_I)) %>%
+  tibble::rownames_to_column(var = 'gene_name') %>%
+  readr::write_csv(file = here::here("data", "megagut", paste(dataset_name, traj_name,"degsAlongTrajectory.csv", sep = "_")))
+
+# Save INFLARE cds
+saveRDS(branch_cds, here::here("data", "megagut", paste(dataset_name, traj_name, 'monocle3Traj.rds', sep = "_")))
+```
+
+# Utility functions
+
+```{r}
+extract_closest_nodes <- function(cds = NULL,
+                                  col_cell_type = 'level_3_annot',
+                                  cell_type_oi = NULL,
+                                  min_n_cells = NULL) {
+  # Extract minimum-spanning tree
+  mst <- principal_graph(cds)$UMAP
+  
+  # Find all the cells that are close to the starting point
+  cell_ids <- colnames(cds)[cds[[col_cell_type]] ==  cell_type_oi] # Starting node
+  closest_vertex <- cds@principal_graph_aux[["UMAP"]]$pr_graph_cell_proj_closest_vertex
+  closest_vertex <- as.matrix(closest_vertex[colnames(cds), ])
+  closest_vertex <- closest_vertex[cell_ids, ]
+  
+  # Extract one or multiple nodes (with min cells)
+  if (!is.null(min_n_cells)) {
+    closest_vertex <- closest_vertex %>%
+      tibble::enframe(name = "barcode", value = "vertex_id") %>%
+      rstatix::freq_table(vertex_id) %>%
+      dplyr::filter(n >= min_n_cells) %>%
+      dplyr::pull(vertex_id)
+  } else {
+    closest_vertex <- as.numeric(names(which.max(table(closest_vertex))))
+  }
+  nodes <- igraph::V(mst)$name[closest_vertex]
+  
+  return(nodes)
+}
+
+extract_cell_trajectory <- function(cds = NULL,
+                                    root_node = NULL,
+                                    end_nodes = NULL) {
+  
+  dp_mst <- principal_graph(cds)[["UMAP"]]
+  path.nodes <- NULL
+  for (end in end_nodes){
+    path <- igraph::shortest_paths(
+      dp_mst, from <- root_node, to = end, mode = "all",
+      algorithm = "unweighted")
+    nodes <- path$vpath[[1]]
+    path.nodes <- c(path.nodes, nodes)
+  }
+  path.nodes <- unique(path.nodes)
+  
+  closest_vertex <- cds@principal_graph_aux[["UMAP"]]$pr_graph_cell_proj_closest_vertex
+  cells.branch <- closest_vertex[closest_vertex %in% path.nodes,]
+  cds.branch <- cds[,rownames(cds@colData) %in% names(cells.branch)]
+  
+  return(cds.branch)
+}
+
+```

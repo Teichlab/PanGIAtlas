@@ -1,7 +1,7 @@
 # Pan-GI Cell Atlas
 Integration of human single cell datasets across the gastrointestinal tract. 
 
-Welcome to the Human Pan-Gastrointestinal Cell Atlas GitHub repository! Here you will find notebooks and scripts related to the [publication](https://doi.org/10.1038/s41586-024-07571-1) along with a [tutorial](https://github.com/Teichlab/PanGIAtlas/blob/main/notebooks/PanGI_atlas_example_notebook.ipynb) of how to map new data to the atlas. You can explore and download the atlas at [gutcellatlas.org](gutcellatlas.org/pangi.html). 
+Welcome to the Human Pan-Gastrointestinal Cell Atlas GitHub repository! Here you will find notebooks and scripts related to the [publication](https://doi.org/10.1038/s41586-024-07571-1) along with a [tutorial](https://github.com/Teichlab/PanGIAtlas/blob/main/notebooks/PanGI_atlas_example_notebook.ipynb) of how to map new data to the atlas. You can explore and download the atlas at [gutcellatlas.org](https://www.gutcellatlas.org/pangi.html). 
 
 <p align="center">
 
@@ -14,7 +14,7 @@ For a comprehensive explanation of the atlas, please check out the [paper](https
 
 ## How to use the atlas
 
-To explore and download the atlas, please go to [gutcellatlas.org](gutcellatlas.org/pangi.html). 
+To explore and download the atlas, please go to [gutcellatlas.org](https://www.gutcellatlas.org/pangi.html). 
 
 **Browse:** There is a cellxgene browser on gutcellatlas.org to explore the main atlas of 1.6 million cells. Currently under construction are cellxgene browsers for each cell lineage, in order to browse the data in more detail. Please check back for updates on when they are available, likely early 2025, in the meantime you can use the cellxgene [selecting and subsetting cells function](https://cellxgene.cziscience.com/docs/04__Analyze%20Public%20Data/4_1__Hosted%20Tutorials).
 

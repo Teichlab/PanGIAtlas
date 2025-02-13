@@ -59,9 +59,11 @@ Core datasets (remapped using STAR v2.7.9a, human reference Cell Ranger 2020-A u
 - Chen et al., J. Dent. Res., 2022 [DOI](https://doi.org/10.1177/002203452210760)
 - Costa-da-Silva et al., iScience, 2022 [DOI](https://doi.org/10.1016/j.isci.2021.103592)
 
-Extended atlas (original count matrices used): 
-- Smillie et al., Cell, 2019, [DOI](https://doi.org/10.1016/j.cell.2019.06.029)
+Epithelial cells in extended atlas (original count matrices used): 
 - Kong et al., Immunity, 2023, [DOI](https://doi.org/10.1016/j.immuni.2023.01.002)
+
+  *Data added to large intestine epithelium object (Extended data 6i-k):*
+- Smillie et al., Cell, 2019, [DOI](https://doi.org/10.1016/j.cell.2019.06.029)
 - Garrido-Trigo et al., Nat Comms, 2023 [DOI](https://doi.org/10.1038/s41467-023-40156-6)
 
 
